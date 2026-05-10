@@ -1,0 +1,4 @@
+flask>=3.0
+akshare>=1.14
+pandas>=2.0
+apscheduler>=3.10

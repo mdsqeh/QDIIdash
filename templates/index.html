@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QDII 基金数据看板</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+    :root {
+        --bg: #0B1120;
+        --surface: #111B2E;
+        --surface-hover: #162240;
+        --surface-border: #1E2D45;
+        --text: #E8EDF5;
+        --text-sub: #8899B4;
+        --text-muted: #5A6D8A;
+        --accent: #F59E0B;
+        --accent-glow: rgba(245, 158, 11, 0.12);
+        --green: #10B981;
+        --green-bg: rgba(16, 185, 129, 0.10);
+        --red: #F43F5E;
+        --red-bg: rgba(244, 63, 94, 0.10);
+        --radius: 12px;
+        --radius-sm: 8px;
+        --shadow: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
+        --font-display: 'Outfit', -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        --font-body: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+        font-family: var(--font-body);
+        background: var(--bg);
+        color: var(--text);
+        min-height: 100vh;
+        background-image:
+            radial-gradient(ellipse 80% 50% at 50% -10%, rgba(245, 158, 11, 0.03) 0%, transparent 100%),
+            radial-gradient(ellipse 60% 40% at 80% 90%, rgba(16, 185, 129, 0.02) 0%, transparent 100%);
+    }
+    .container { max-width: 2000px; margin: 0 auto; padding: 24px 20px; }
+
+    /* ── Header ── */
+    .header { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 6px; flex-wrap: wrap; }
+    .header-left { flex: 1; }
+    h1 {
+        font-family: var(--font-display);
+        font-size: 1.6rem; font-weight: 700; letter-spacing: -0.02em;
+        background: linear-gradient(135deg, #F5E8B7 0%, #F59E0B 100%);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        background-clip: text;
+    }
+    .header-badge {
+        display: inline-block; padding: 3px 10px; border-radius: 20px;
+        font-size: 0.7rem; font-weight: 600; letter-spacing: 0.04em;
+        background: var(--accent-glow); color: var(--accent);
+        border: 1px solid rgba(245, 158, 11, 0.2);
+        margin-left: 10px; vertical-align: middle;
+        font-family: var(--font-display);
+    }
+    .subtitle {
+        color: var(--text-sub); margin-bottom: 22px; font-size: 0.85rem;
+        display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    }
+    .subtitle .sep { color: var(--text-muted); font-size: 0.7rem; }
+    .subtitle strong { font-family: var(--font-display); color: var(--text); }
+
+    /* ── Stats ── */
+    .stat { display: flex; gap: 12px; margin-bottom: 22px; }
+    .stat-item {
+        background: var(--surface); border: 1px solid var(--surface-border);
+        border-radius: var(--radius); padding: 18px 22px; flex: 1; text-align: center;
+        position: relative; overflow: hidden;
+        transition: transform 0.2s, border-color 0.2s;
+    }
+    .stat-item:hover { transform: translateY(-1px); border-color: rgba(245,158,11,0.15); }
+    .stat-item.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 20px var(--accent-glow); }
+    .stat-item .num {
+        font-family: var(--font-display); font-size: 1.5rem; font-weight: 700;
+        color: var(--accent); letter-spacing: -0.02em;
+    }
+    .stat-item .lbl { font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; font-weight: 500; }
+
+    /* ── Toolbar ── */
+    .toolbar { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; align-items: center; }
+    .search {
+        padding: 9px 14px; border: 1px solid var(--surface-border); border-radius: var(--radius-sm);
+        background: var(--surface); color: var(--text); width: 220px;
+        font-size: 0.85rem; outline: none; transition: border-color 0.2s;
+        font-family: var(--font-body);
+    }
+    .search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+    .search::placeholder { color: var(--text-muted); }
+    .btn {
+        padding: 9px 18px; border: none; border-radius: var(--radius-sm); cursor: pointer;
+        font-size: 0.85rem; font-weight: 600; transition: all 0.15s;
+        font-family: var(--font-body); letter-spacing: 0.02em;
+    }
+    .btn-primary {
+        background: linear-gradient(135deg, #D97706, #F59E0B);
+        color: #0B1120;
+    }
+    .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 15px rgba(245,158,11,0.25); }
+    .btn-outline {
+        background: var(--surface); border: 1px solid var(--surface-border); color: var(--text-sub);
+    }
+    .btn-outline:hover { background: var(--surface-hover); border-color: var(--text-muted); color: var(--text); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none !important; }
+    .fetch-status { color: var(--text-muted); font-size: 0.8rem; }
+
+    /* ── Mobile Sort ── */
+    .mobile-sort { display: none; }
+    .sort-select {
+        padding: 9px 12px; border: 1px solid var(--surface-border); border-radius: var(--radius-sm);
+        background: var(--surface); color: var(--text); width: 155px;
+        font-size: 0.85rem; outline: none; cursor: pointer;
+        font-family: var(--font-body);
+    }
+    .sort-select:focus { border-color: var(--accent); }
+
+    /* ── Table ── */
+    .table-wrap {
+        overflow-x: auto; border-radius: var(--radius);
+        border: 1px solid var(--surface-border); background: var(--surface);
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 0.8rem; min-width: 1800px; }
+    th {
+        background: #0F1929; padding: 10px 8px; text-align: left;
+        font-weight: 600; border-bottom: 1px solid var(--surface-border);
+        cursor: pointer; user-select: none; white-space: nowrap;
+        color: var(--text-sub); font-size: 0.78rem; letter-spacing: 0.03em;
+        font-family: var(--font-display); text-transform: uppercase;
+        position: sticky; top: 0; z-index: 1;
+    }
+    th:hover { color: var(--accent); }
+    td {
+        padding: 8px; border-bottom: 1px solid rgba(30, 45, 69, 0.4);
+        font-family: var(--font-body); font-size: 0.82rem;
+        transition: background 0.1s;
+    }
+    tr:hover td { background: var(--surface-hover); }
+    tr:last-child td { border-bottom: none; }
+    .up { color: var(--green); }
+    .down { color: var(--red); }
+    .badge {
+        display: inline-block; padding: 2px 8px; border-radius: 10px;
+        font-size: 0.7rem; font-weight: 600; font-family: var(--font-display);
+    }
+    .badge-qdii { background: var(--accent-glow); color: var(--accent); }
+    .badge-exchange { background: var(--green-bg); color: var(--green); }
+    .badge-otc { background: rgba(136,153,180,0.1); color: var(--text-sub); }
+
+    /* ── Card List (Mobile) ── */
+    .card-list { display: none; }
+
+    /* ── Pagination ── */
+    .pagination { display: flex; justify-content: center; align-items: center; gap: 14px; margin-top: 20px; }
+    .pagination .info { color: var(--text-muted); font-size: 0.82rem; font-family: var(--font-display); }
+
+    /* ── Footer ── */
+    .footer { text-align: center; margin-top: 28px; color: var(--text-muted); font-size: 0.72rem; letter-spacing: 0.02em; padding-bottom: 12px; }
+
+    /* ── Toast ── */
+    .toast {
+        position: fixed; top: 24px; right: 24px; padding: 14px 22px; border-radius: var(--radius-sm);
+        color: #0B1120; font-size: 0.85rem; font-weight: 600; z-index: 999;
+        opacity: 0; pointer-events: none; transition: opacity 0.3s, transform 0.3s;
+        transform: translateY(-8px); font-family: var(--font-body);
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.info { background: linear-gradient(135deg, #D97706, #F59E0B); }
+    .toast.success { background: linear-gradient(135deg, #059669, #10B981); }
+    .toast.error { background: linear-gradient(135deg, #BE123C, #F43F5E); }
+
+    /* ── Scrollbar ── */
+    .table-wrap::-webkit-scrollbar { height: 6px; }
+    .table-wrap::-webkit-scrollbar-track { background: transparent; }
+    .table-wrap::-webkit-scrollbar-thumb { background: var(--surface-border); border-radius: 3px; }
+    .table-wrap::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+    /* ── Responsive <768px ── */
+    @media (max-width: 768px) {
+        .container { padding: 16px 12px; }
+        h1 { font-size: 1.2rem; }
+        .header-badge { display: none; }
+        .subtitle { font-size: 0.75rem; gap: 6px; margin-bottom: 16px; }
+        .stat { gap: 6px; }
+        .stat-item { padding: 12px 10px; }
+        .stat-item .num { font-size: 1.1rem; }
+        .toolbar { gap: 8px; }
+        .search { width: 100%; }
+        .table-wrap { display: none; }
+
+        .mobile-sort { display: flex; align-items: center; gap: 8px; flex: 1; }
+        .card-list { display: flex; flex-direction: column; gap: 10px; }
+
+        .fund-card {
+            background: var(--surface); border: 1px solid var(--surface-border);
+            border-radius: var(--radius); padding: 14px;
+            transition: border-color 0.2s;
+        }
+        .fund-card:active { border-color: rgba(245,158,11,0.25); }
+
+        .card-header {
+            display: flex; justify-content: space-between; align-items: flex-start;
+            margin-bottom: 10px; padding-bottom: 10px;
+            border-bottom: 1px solid rgba(30, 45, 69, 0.4);
+        }
+        .card-header .code {
+            font-family: var(--font-display); font-weight: 700;
+            color: var(--accent); font-size: 0.85rem;
+        }
+        .card-header .name { font-weight: 600; font-size: 0.85rem; color: var(--text); }
+        .card-header .badges { display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; }
+        .card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; }
+        .card-item {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 4px 0; border-bottom: 1px solid rgba(30, 45, 69, 0.15);
+        }
+        .card-item .label { color: var(--text-muted); font-size: 0.72rem; }
+        .card-item .value { font-weight: 600; font-size: 0.82rem; font-family: var(--font-display); }
+        .card-item .value.up { color: var(--green); }
+        .card-item .value.down { color: var(--red); }
+        .card-full { grid-column: 1 / -1; padding-top: 4px; }
+        .card-full .card-item { justify-content: flex-start; gap: 8px; flex-wrap: wrap; border-bottom: none; }
+        .card-full .card-item .label { min-width: auto; }
+
+        .pagination .info { font-size: 0.72rem; }
+        .pagination { gap: 8px; }
+    }
+</style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <div class="header-left">
+            <h1>
+                QDII 基金数据看板
+                <span class="header-badge">● LIVE</span>
+            </h1>
+        </div>
+    </div>
+    <p class="subtitle">
+        数据来源：AKShare（天天基金）
+        <span class="sep">·</span>
+        更新于 <span id="updateDate">-</span>
+        <span class="sep">·</span>
+        共 <strong id="totalCount">-</strong> 只基金
+    </p>
+
+    <div class="stat">
+        <div class="stat-item" id="statAll" onclick="setFilter(null)" style="cursor:pointer;transition:border-color 0.2s"><div class="num" id="cntTotal">-</div><div class="lbl">全部</div></div>
+        <div class="stat-item" id="statPos1y" onclick="setFilter('pos_1y')" style="cursor:pointer;transition:border-color 0.2s"><div class="num" id="cntPos">-</div><div class="lbl">近1年正收益</div></div>
+        <div class="stat-item" id="statAnnGt20" onclick="setFilter('ann_gt_20')" style="cursor:pointer;transition:border-color 0.2s"><div class="num" id="cntAnnGt20">-</div><div class="lbl">年化 &gt; 20%</div></div>
+    </div>
+
+    <div class="toolbar">
+        <input type="text" id="searchInput" class="search" placeholder="搜索基金代码或名称..." oninput="onSearch()">
+        <button class="btn btn-outline" onclick="resetFilter()">清除筛选</button>
+        <button class="btn btn-primary" onclick="exportCSV()">导出 CSV</button>
+        <span class="fetch-status" id="fetchStatus"></span>
+        <div class="mobile-sort">
+            <select class="sort-select" id="mobileSort" onchange="onMobileSort()">
+                <option value="code">基金代码</option>
+                <option value="name">基金简称</option>
+                <option value="nav">最新净值</option>
+                <option value="ret_1y">近1年涨跌</option>
+                <option value="ret_2y">近2年涨跌</option>
+                <option value="ret_3y">近3年涨跌</option>
+                <option value="ret_4y">近4年涨跌</option>
+                <option value="ret_5y">近5年涨跌</option>
+                <option value="ret_10y">近10年涨跌</option>
+                <option value="ret_ann">成立来年化</option>
+                <option value="total_ret">成立来总收益</option>
+                <option value="purchase_status">申购状态</option>
+            </select>
+            <button class="btn btn-outline" id="mobileOrderBtn" onclick="onMobileOrder()">↑</button>
+        </div>
+    </div>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th onclick="sortTable('code')" id="th_code">代码</th>
+                    <th onclick="sortTable('name')" id="th_name">简称</th>
+                    <th onclick="sortTable('ftype')" id="th_ftype">类型</th>
+                    <th onclick="sortTable('market')" id="th_market">市场</th>
+                    <th onclick="sortTable('nav')" id="th_nav">最新净值</th>
+                    <th onclick="sortTable('acc_nav')" id="th_acc_nav">累计净值</th>
+                    <th onclick="sortTable('ret_1y')" id="th_ret_1y">近1年</th>
+                    <th onclick="sortTable('ret_2y')" id="th_ret_2y">近2年</th>
+                    <th onclick="sortTable('ret_3y')" id="th_ret_3y">近3年</th>
+                    <th onclick="sortTable('ret_4y')" id="th_ret_4y">近4年</th>
+                    <th onclick="sortTable('ret_5y')" id="th_ret_5y">近5年</th>
+                    <th onclick="sortTable('ret_10y')" id="th_ret_10y">近10年</th>
+                    <th onclick="sortTable('ret_ann')" id="th_ret_ann">年化</th>
+                    <th onclick="sortTable('total_ret')" id="th_total_ret">总收益</th>
+                    <th onclick="sortTable('mgmt_fee')" id="th_mgmt_fee">管理费</th>
+                    <th onclick="sortTable('cust_fee')" id="th_cust_fee">托管费</th>
+                    <th onclick="sortTable('sale_fee')" id="th_sale_fee">销售费</th>
+                    <th onclick="sortTable('est_date')" id="th_est_date">成立日</th>
+                    <th onclick="sortTable('upd_date')" id="th_upd_date">更新</th>
+                    <th onclick="sortTable('purchase_status')" id="th_purchase_status">申购</th>
+                    <th onclick="sortTable('daily_limit')" id="th_daily_limit">日额度</th>
+                </tr>
+            </thead>
+            <tbody id="tbody"></tbody>
+        </table>
+    </div>
+
+    <div class="card-list" id="cardList"></div>
+
+    <div class="pagination" id="pagination">
+        <button class="btn btn-outline" id="prevBtn" onclick="goPage(-1)">上一页</button>
+        <span class="info" id="pageInfo"></span>
+        <button class="btn btn-outline" id="nextBtn" onclick="goPage(1)">下一页</button>
+    </div>
+
+    <div class="footer">
+        数据仅供参考，不构成投资建议 · 净值涨跌基于最新披露日 · 每日 21:00 自动更新
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let state = {
+    total: 0,
+    page: 1,
+    perPage: 50,
+    sort: 'code',
+    order: 'asc',
+    search: '',
+    funds: [],
+    filter: null,
+};
+
+function fmtNum(val) {
+    if (val == null || isNaN(val)) return '-';
+    return parseFloat(val).toFixed(4);
+}
+function fmtPct(val) {
+    if (val == null || isNaN(val)) return '-';
+    return parseFloat(val).toFixed(2) + '%';
+}
+function fmtFee(val) {
+    if (val == null || isNaN(val)) return '-';
+    return parseFloat(val).toFixed(2) + '%';
+}
+function fmtStatus(val) {
+    if (val == null || val === '') return '-';
+    const badges = {'开放申购': 'badge-exchange', '限大额': 'badge-qdii', '暂停申购': 'badge-otc'};
+    const cls = badges[val] || '';
+    return cls ? `<span class="badge ${cls}">${val}</span>` : val;
+}
+function fmtLimit(val) {
+    if (val == null || isNaN(val)) return '-';
+    const n = parseFloat(val);
+    if (n >= 1000000000) return '不限';
+    if (n === 0) return '-';
+    return n.toLocaleString('zh-CN');
+}
+function showToast(msg, type) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast ' + type + ' show';
+    setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+async function loadFunds() {
+    const params = new URLSearchParams({
+        page: state.page,
+        per_page: state.perPage,
+        sort: state.sort,
+        order: state.order,
+    });
+    if (state.search) params.set('search', state.search);
+    if (state.filter) params.set('filter', state.filter);
+    const [resp, statsResp] = await Promise.all([
+        fetch('/api/funds?' + params.toString()),
+        fetch('/api/stats'),
+    ]);
+    const data = await resp.json();
+    const stats = await statsResp.json();
+    state.total = data.total;
+    state.funds = data.funds;
+    renderTable();
+    updateStats(stats);
+    updatePagination();
+}
+
+function renderTable() {
+    const tbody = document.getElementById('tbody');
+    tbody.innerHTML = '';
+    if (state.funds.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="21" style="text-align:center;padding:30px;color:#5A6D8A;">无匹配基金</td></tr>';
+        document.getElementById('cardList').innerHTML = '';
+        return;
+    }
+    state.funds.forEach(r => {
+        const cls1y = parseFloat(r.ret_1y) >= 0 ? 'up' : 'down';
+        const cls2y = parseFloat(r.ret_2y) >= 0 ? 'up' : 'down';
+        const cls3y = parseFloat(r.ret_3y) >= 0 ? 'up' : 'down';
+        const cls4y = parseFloat(r.ret_4y) >= 0 ? 'up' : 'down';
+        const cls5y = parseFloat(r.ret_5y) >= 0 ? 'up' : 'down';
+        const cls10y = parseFloat(r.ret_10y) >= 0 ? 'up' : 'down';
+        const clsTotal = parseFloat(r.total_ret) >= 0 ? 'up' : 'down';
+        tbody.insertAdjacentHTML('beforeend', `<tr>
+            <td style="font-family:var(--font-display);font-weight:600;color:var(--accent)">${r.code}</td>
+            <td style="font-weight:500">${r.name} <span class="badge badge-qdii">QDII</span></td>
+            <td>${r.ftype || '-'}</td>
+            <td>${r.market === '场内' ? '<span class="badge badge-exchange">场内</span>' : '<span class="badge badge-otc">场外</span>'}</td>
+            <td style="font-family:var(--font-display)">${fmtNum(r.nav)}</td>
+            <td style="font-family:var(--font-display)">${fmtNum(r.acc_nav)}</td>
+            <td class="${cls1y}" style="font-family:var(--font-display);font-weight:600">${fmtPct(r.ret_1y)}</td>
+            <td class="${cls2y}" style="font-family:var(--font-display);font-weight:600">${fmtPct(r.ret_2y)}</td>
+            <td class="${cls3y}" style="font-family:var(--font-display);font-weight:600">${fmtPct(r.ret_3y)}</td>
+            <td class="${cls4y}" style="font-family:var(--font-display);font-weight:600">${fmtPct(r.ret_4y)}</td>
+            <td class="${cls5y}" style="font-family:var(--font-display);font-weight:600">${fmtPct(r.ret_5y)}</td>
+            <td class="${cls10y}" style="font-family:var(--font-display);font-weight:600">${fmtPct(r.ret_10y)}</td>
+            <td style="font-family:var(--font-display)">${fmtPct(r.ret_ann)}</td>
+            <td class="${clsTotal}" style="font-family:var(--font-display);font-weight:600">${fmtPct(r.total_ret)}</td>
+            <td style="font-family:var(--font-display)">${fmtFee(r.mgmt_fee)}</td>
+            <td style="font-family:var(--font-display)">${fmtFee(r.cust_fee)}</td>
+            <td style="font-family:var(--font-display)">${fmtFee(r.sale_fee)}</td>
+            <td>${r.est_date || '-'}</td>
+            <td>${r.upd_date || '-'}</td>
+            <td>${fmtStatus(r.purchase_status)}</td>
+            <td style="font-family:var(--font-display)">${fmtLimit(r.daily_limit)}</td>
+        </tr>`);
+    });
+    // Cards
+    const cardList = document.getElementById('cardList');
+    cardList.innerHTML = '';
+    state.funds.forEach(r => {
+        const cls1y = parseFloat(r.ret_1y) >= 0 ? 'up' : 'down';
+        const cls2y = parseFloat(r.ret_2y) >= 0 ? 'up' : 'down';
+        const cls3y = parseFloat(r.ret_3y) >= 0 ? 'up' : 'down';
+        const cls4y = parseFloat(r.ret_4y) >= 0 ? 'up' : 'down';
+        const cls5y = parseFloat(r.ret_5y) >= 0 ? 'up' : 'down';
+        const cls10y = parseFloat(r.ret_10y) >= 0 ? 'up' : 'down';
+        const clsTotal = parseFloat(r.total_ret) >= 0 ? 'up' : 'down';
+        const marketHtml = r.market === '场内' ? '<span class="badge badge-exchange">场内</span>' : '<span class="badge badge-otc">场外</span>';
+        cardList.insertAdjacentHTML('beforeend', `<div class="fund-card">
+            <div class="card-header">
+                <div>
+                    <div><span class="code">${r.code}</span> <span class="name">${r.name}</span></div>
+                    <div class="badges"><span class="badge badge-qdii">QDII</span> ${marketHtml} <span class="badge" style="background:rgba(136,153,180,0.1);color:var(--text-sub)">${r.ftype || '-'}</span></div>
+                </div>
+            </div>
+            <div class="card-grid">
+                <div class="card-item"><span class="label">净值</span><span class="value">${fmtNum(r.nav)}</span></div>
+                <div class="card-item"><span class="label">累计净值</span><span class="value">${fmtNum(r.acc_nav)}</span></div>
+                <div class="card-item"><span class="label">近1年</span><span class="value ${cls1y}">${fmtPct(r.ret_1y)}</span></div>
+                <div class="card-item"><span class="label">近2年</span><span class="value ${cls2y}">${fmtPct(r.ret_2y)}</span></div>
+                <div class="card-item"><span class="label">近3年</span><span class="value ${cls3y}">${fmtPct(r.ret_3y)}</span></div>
+                <div class="card-item"><span class="label">近4年</span><span class="value ${cls4y}">${fmtPct(r.ret_4y)}</span></div>
+                <div class="card-item"><span class="label">近5年</span><span class="value ${cls5y}">${fmtPct(r.ret_5y)}</span></div>
+                <div class="card-item"><span class="label">近10年</span><span class="value ${cls10y}">${fmtPct(r.ret_10y)}</span></div>
+                <div class="card-item"><span class="label">年化</span><span class="value">${fmtPct(r.ret_ann)}</span></div>
+                <div class="card-item"><span class="label">总收益</span><span class="value ${clsTotal}">${fmtPct(r.total_ret)}</span></div>
+                <div class="card-item"><span class="label">管理/托管/销售</span><span class="value">${fmtFee(r.mgmt_fee)} / ${fmtFee(r.cust_fee)} / ${fmtFee(r.sale_fee)}</span></div>
+                <div class="card-full">
+                    <div class="card-item"><span class="label">申购</span><span class="value">${fmtStatus(r.purchase_status)}</span><span class="label" style="margin-left:10px">额度</span><span class="value">${fmtLimit(r.daily_limit)}</span></div>
+                    <div class="card-item"><span class="label">成立/更新</span><span class="value">${r.est_date || '-'} / ${r.upd_date || '-'}</span></div>
+                </div>
+            </div>
+        </div>`);
+    });
+}
+
+function updateStats(stats) {
+    document.getElementById('cntTotal').textContent = stats ? stats.total : '-';
+    document.getElementById('totalCount').textContent = stats ? stats.total : '-';
+    document.getElementById('cntPos').textContent = stats ? stats.pos_1y : '-';
+    document.getElementById('cntAnnGt20').textContent = stats ? stats.ret_ann_gt_20 : '-';
+    if (state.funds.length > 0 && state.funds[0].upd_date) {
+        document.getElementById('updateDate').textContent = state.funds[0].upd_date;
+    }
+    document.getElementById('statAll').classList.toggle('active', state.filter === null);
+    document.getElementById('statPos1y').classList.toggle('active', state.filter === 'pos_1y');
+    document.getElementById('statAnnGt20').classList.toggle('active', state.filter === 'ann_gt_20');
+}
+function setFilter(f) {
+    if (state.filter === f) {
+        state.filter = null;
+    } else {
+        state.filter = f;
+    }
+    state.page = 1;
+    loadFunds();
+}
+
+function updatePagination() {
+    const totalPages = Math.max(1, Math.ceil(state.total / state.perPage));
+    document.getElementById('pageInfo').textContent = `第 ${state.page}/${totalPages} 页（共 ${state.total} 条）`;
+    document.getElementById('prevBtn').disabled = state.page <= 1;
+    document.getElementById('nextBtn').disabled = state.page >= totalPages;
+}
+
+function onSearch() {
+    state.search = document.getElementById('searchInput').value.trim();
+    state.page = 1;
+    loadFunds();
+}
+function resetFilter() {
+    document.getElementById('searchInput').value = '';
+    state.search = '';
+    state.page = 1;
+    loadFunds();
+}
+function sortTable(field) {
+    if (state.sort === field) {
+        state.order = state.order === 'asc' ? 'desc' : 'asc';
+    } else {
+        state.sort = field;
+        state.order = 'asc';
+    }
+    document.querySelectorAll('th').forEach(th => {
+        th.textContent = th.textContent.replace(' ▲','').replace(' ▼','');
+    });
+    const th = document.getElementById('th_' + field);
+    if (th) th.textContent += state.order === 'asc' ? ' ▲' : ' ▼';
+    loadFunds();
+}
+function goPage(delta) {
+    const totalPages = Math.max(1, Math.ceil(state.total / state.perPage));
+    const newPage = state.page + delta;
+    if (newPage < 1 || newPage > totalPages) return;
+    state.page = newPage;
+    loadFunds();
+}
+function onMobileSort() {
+    state.sort = document.getElementById('mobileSort').value;
+    state.order = 'asc';
+    state.page = 1;
+    document.getElementById('mobileOrderBtn').textContent = '↑';
+    loadFunds();
+}
+function onMobileOrder() {
+    state.order = state.order === 'asc' ? 'desc' : 'asc';
+    document.getElementById('mobileOrderBtn').textContent = state.order === 'asc' ? '↑' : '↓';
+    state.page = 1;
+    loadFunds();
+}
+
+async function exportCSV() {
+    const params = new URLSearchParams({ sort: state.sort, order: state.order, per_page: 99999 });
+    if (state.search) params.set('search', state.search);
+    const resp = await fetch('/api/funds?' + params.toString());
+    const data = await resp.json();
+    if (data.funds.length === 0) return;
+    const headers = ['基金代码', '基金简称', '基金类型', '类型', '最新净值', '累计净值', '近1年涨跌幅', '近2年涨跌幅', '近3年涨跌幅', '近4年涨跌幅', '近5年涨跌幅', '近10年涨跌幅', '成立来年化收益', '成立来总收益', '管理费', '托管费', '销售服务费', '成立日期', '更新日期', '申购状态', '日累计额度'];
+    const keys = ['code', 'name', 'ftype', 'market', 'nav', 'acc_nav', 'ret_1y', 'ret_2y', 'ret_3y', 'ret_4y', 'ret_5y', 'ret_10y', 'ret_ann', 'total_ret', 'mgmt_fee', 'cust_fee', 'sale_fee', 'est_date', 'upd_date', 'purchase_status', 'daily_limit'];
+    let csv = headers.join(',') + '\n';
+    data.funds.forEach(r => {
+        csv += keys.map(k => {
+            let val = r[k];
+            if (val == null) return '';
+            return '"' + val + '"';
+        }).join(',') + '\n';
+    });
+    const blob = new Blob(['\uFEFF' + csv], {type: 'text/csv;charset=utf-8;'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'QDII_' + new Date().toISOString().slice(0,10) + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+(async function init() {
+    document.getElementById('fetchStatus').textContent = '每日 21:00 自动更新';
+    document.getElementById('mobileSort').value = state.sort;
+    await loadFunds();
+})();
+</script>
+</body>
+</html>

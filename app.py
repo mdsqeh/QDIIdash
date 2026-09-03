@@ -365,10 +365,9 @@ def _start_scheduler():
     scheduler = BackgroundScheduler(timezone='Asia/Shanghai')
     scheduler.add_job(_do_fetch, 'cron', hour=21, minute=0, id='daily_fetch')
     scheduler.add_job(_do_fetch_incremental, 'cron', hour=22, minute=0, id='daily_incremental')
-    scheduler.add_job(_do_check_quota, 'cron', day_of_week='mon-fri', hour='9-14', minute='*/30', id='quota_check')
-    scheduler.add_job(_do_check_quota, 'cron', day_of_week='mon-fri', hour=15, minute=0, id='quota_check_1500')
+    scheduler.add_job(_do_check_quota, 'cron', day_of_week='mon-fri', hour='9-19', minute=0, id='quota_check')
     scheduler.start()
-    print("📅 定时任务已启动：QDII 每天 21:00 全量采集，22:00 增量更新，额度监控交易日 9:00-15:00 每 30min")
+    print("📅 定时任务已启动：QDII 每天 21:00 全量采集，22:00 增量更新，额度监控交易日 9:00-19:00 每小时")
 
 
 if __name__ == '__main__':

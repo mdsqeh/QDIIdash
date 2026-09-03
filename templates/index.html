@@ -392,6 +392,11 @@
         </div>
     </div>
 
+    <div class="tabs" id="tabs">
+        <button class="tab-btn active" id="tabQdii" onclick="switchTab('qdii')">QDII 基金</button>
+        <button class="tab-btn" id="tabQuota" onclick="switchTab('quota')">额度变动 <span id="quotaUnreadBadge" style="display:none;background:var(--red);color:#fff;border-radius:50%;padding:1px 5px;font-size:0.7rem;margin-left:4px">0</span></button>
+    </div>
+
     <div class="stat" id="statBar">
         <div class="stat-item" id="statAll" onclick="setFilter(null)" style="cursor:pointer;transition:border-color 0.2s"><div class="num" id="cntTotal">-</div><div class="lbl" id="statAllLbl">全部</div></div>
         <div class="stat-item" id="statPos1y" onclick="setFilter('pos_1y')" style="cursor:pointer;transition:border-color 0.2s"><div class="num" id="cntPos">-</div><div class="lbl" id="statPosLbl">近1年正收益</div></div>
@@ -469,6 +474,7 @@ const TAB_CONFIG = {
         statsApi: '/qdii/api/stats',
         dataSource: 'AKShare',
         footer: '每月1号全量，每日21:00增量',
+        isDataTab: true,
         columns: [
             {key:'_star', label:'自选', thStyle:'width:36px;text-align:center;cursor:default', tdStyle:'text-align:center;padding:4px', render:(r)=>{const w=state.watchlist.includes(r.code);return '<span class="star '+(w?'star-on':'star-off')+'" onclick="event.stopPropagation();toggleWatch(\''+r.code+'\')">'+(w?'⊡':'☐')+'</span>';}},
             {key:'_rating', label:'自评级', thStyle:'width:90px;text-align:center;cursor:default', tdStyle:'text-align:center;padding:4px;white-space:nowrap', render:(r)=>{const rt=state.ratings[r.code]||0;let h='';for(let i=1;i<=5;i++){h+='<span class="rstar '+(i<=rt?'rstar-on':'rstar-off')+'" onclick="event.stopPropagation();setRating(\''+r.code+'\','+i+')">'+(i<=rt?'★':'☆')+'</span>';}return h;}},
@@ -515,6 +521,26 @@ const TAB_CONFIG = {
         statsFilters: [null, 'pos_1y', 'ann_gt'],
         csvHeaders: ['基金代码','基金简称','基金类型','类型','市场','最新净值','日增长率','折溢价率','近1年涨跌幅','近2年涨跌幅','近3年涨跌幅','近4年涨跌幅','近5年涨跌幅','近10年涨跌幅','成立来年化收益','成立来总收益','管理费','托管费','成立日期','更新日期','申购状态','日累计额度'],
         csvKeys: ['code','name','ftype','market','nav','daily_change','premium_discount','ret_1y','ret_2y','ret_3y','ret_4y','ret_5y','ret_10y','ret_ann','total_ret','mgmt_fee','cust_fee','est_date','upd_date','purchase_status','daily_limit'],
+    },
+    quota: {
+        api: '/qdii/api/quota/history',
+        footer: '交易日 9:00-19:00 每小时检测',
+        isDataTab: false,
+        columns: [
+            {key:'detected_at', label:'时间', thStyle:'', tdClass:'', tdStyle:'font-family:var(--font-display);font-size:0.78rem', render:(r)=>{const d=new Date(r.detected_at);return d.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});}},
+            {key:'code', label:'代码', thStyle:'', tdClass:'', tdStyle:'font-family:var(--font-display);font-weight:600;color:var(--accent)', render:(r)=>r.code},
+            {key:'name', label:'名称', thStyle:'', tdClass:'', tdStyle:'font-weight:500', render:(r)=>r.name||r.code},
+            {key:'field', label:'字段', thStyle:'', tdClass:'', tdStyle:'', render:(r)=>r.field==='daily_limit'?'日申购限额':'申购状态'},
+            {key:'old_value', label:'原值', thStyle:'', tdClass:'', tdStyle:'font-family:var(--font-display)', render:(r)=>r.old_value||'-'},
+            {key:'new_value', label:'新值', thStyle:'', tdClass:'', tdStyle:'font-family:var(--font-display);font-weight:600', render:(r)=>r.new_value||'-'},
+            {key:'is_read', label:'已读', thStyle:'width:60px;text-align:center', tdClass:'', tdStyle:'text-align:center', render:(r)=>r.is_read?'<span style="color:var(--text-muted)">✓</span>':'<span style="color:var(--accent)">○</span>'},
+        ],
+        sortOptions: [],
+        statsKeys: [],
+        statsLabels: [],
+        statsFilters: [],
+        csvHeaders: [],
+        csvKeys: [],
     },
 };
 
@@ -649,22 +675,36 @@ function switchTab(tab) {
     if (dataSourceEl) dataSourceEl.textContent = cfg.dataSource;
     document.getElementById('fetchStatus').textContent = cfg.footer;
 
-    // rebuild sort dropdown
-    const sel = document.getElementById('mobileSort');
-    sel.innerHTML = cfg.sortOptions.map(o => `<option value="${o.value}">${o.label}</option>`).join('');
-    sel.value = state.sort;
-    document.getElementById('mobileOrderBtn').textContent = '↑';
+    // 隐藏/显示 QDII 专用元素
+    const isQdii = tab === 'qdii';
+    document.getElementById('statBar').style.display = isQdii ? '' : 'none';
+    document.querySelector('.toolbar').style.display = isQdii ? '' : 'none';
+    document.querySelector('.table-wrap').style.display = isQdii ? '' : 'none';
+    document.getElementById('cardList').style.display = isQdii ? '' : 'none';
+    document.getElementById('pagination').style.display = isQdii ? '' : 'none';
 
-    // labels
-    document.getElementById('statAllLbl').textContent = cfg.statsLabels[0];
-    const thirdItem = document.getElementById('statThird');
-    if (cfg.statsLabels[2]) {
-        document.getElementById('statPosLbl').textContent = cfg.statsLabels[1];
-        document.getElementById('statThirdLbl').textContent = '年化 > ' + state.annThreshold + '%';
-        thirdItem.onclick = function() { setFilter(cfg.statsFilters[2]); };
-        thirdItem.style.display = '';
+    if (isQdii) {
+        sel = document.getElementById('mobileSort');
+        sel.innerHTML = cfg.sortOptions.map(o => `<option value="${o.value}">${o.label}</option>`).join('');
+        sel.value = state.sort;
+        document.getElementById('mobileOrderBtn').textContent = '↑';
+        document.getElementById('statAllLbl').textContent = cfg.statsLabels[0];
+        const thirdItem = document.getElementById('statThird');
+        if (cfg.statsLabels[2]) {
+            document.getElementById('statPosLbl').textContent = cfg.statsLabels[1];
+            document.getElementById('statThirdLbl').textContent = '年化 > ' + state.annThreshold + '%';
+            thirdItem.onclick = function() { setFilter(cfg.statsFilters[2]); };
+            thirdItem.style.display = '';
+        } else {
+            thirdItem.style.display = 'none';
+        }
+        loadFunds();
     } else {
-        thirdItem.style.display = 'none';
+        // 额度变动 Tab
+        const quotaBar = document.getElementById('quotaBar');
+        if (quotaBar) quotaBar.style.display = '';
+        document.getElementById('quotaDate').value = dateToString(new Date());
+        loadQuotaHistory();
     }
 
     loadFunds();
@@ -1293,9 +1333,88 @@ function updateWatchlistBtn() {
     });
 
     await loadFunds();
+    // 同时预加载额度未读数
+    loadQuotaBadge();
 })();
 
 // ── Quota Change Monitor ───────────────────────────────────────
+
+function dateToString(d) {
+    return d.toISOString().slice(0, 10);
+}
+
+async function loadQuotaBadge() {
+    try {
+        const resp = await fetch('/qdii/api/quota/changes');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const badge = document.getElementById('quotaUnreadBadge');
+        if (data.length > 0) {
+            badge.textContent = data.length;
+            badge.style.display = '';
+        } else {
+            badge.style.display = 'none';
+        }
+    } catch (e) { /* ignore */ }
+}
+
+async function loadQuotaHistory() {
+    const dateVal = document.getElementById('quotaDate').value;
+    try {
+        const resp = await fetch(`/qdii/api/quota/history?date=${dateVal}`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const tbody = document.getElementById('quotaTbody');
+        if (data.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:30px;color:#5A6D8A;">当日无额度变动记录</td></tr>`;
+            document.getElementById('quotaCount').textContent = '';
+            return;
+        }
+        const unread = data.filter(r => !r.is_read).length;
+        document.getElementById('quotaCount').textContent = `共 ${data.length} 条，未读 ${unread} 条`;
+        tbody.innerHTML = data.map(c => {
+            const label = c.field === 'daily_limit' ? '日申购限额' : '申购状态';
+            const rowCls = c.is_read ? 'opacity:0.5' : '';
+            return `<tr style="${rowCls}" data-id="${c.id}">
+                <td style="font-family:var(--font-display);font-size:0.78rem">${new Date(c.detected_at).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}</td>
+                <td style="font-family:var(--font-display);font-weight:600;color:var(--accent)">${c.code}</td>
+                <td>${escapeHtml(c.name || c.code)}</td>
+                <td>${label}</td>
+                <td style="font-family:var(--font-display)">${escapeHtml(c.old_value || '-')}</td>
+                <td style="font-family:var(--font-display);font-weight:600">${escapeHtml(c.new_value || '-')}</td>
+                <td style="text-align:center;cursor:pointer" onclick="markQuotaRead(${c.id},this)">${c.is_read ? '<span style="color:var(--text-muted)">✓</span>' : '<span style="color:var(--accent)">○</span>'}</td>
+            </tr>`;
+        }).join('');
+    } catch (e) {
+        document.getElementById('quotaTbody').innerHTML = '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--red)">加载失败</td></tr>';
+    }
+}
+
+function markQuotaRead(id, el) {
+    fetch('/qdii/api/quota/ack-single', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({id})
+    }).then(() => {
+        const row = el.closest('tr');
+        row.style.opacity = '0.5';
+        el.innerHTML = '<span style="color:var(--text-muted)">✓</span>';
+        loadQuotaBadge();
+        // 更新计数
+        const countEl = document.getElementById('quotaCount');
+        if (countEl) {
+            const m = countEl.textContent.match(/未读 (\d+)/);
+            if (m) countEl.textContent = countEl.textContent.replace(`未读 ${m[1]}`, `未读 ${parseInt(m[1]) - 1}`);
+        }
+    });
+}
+
+function markAllQuotaRead() {
+    fetch('/qdii/api/quota/ack', {method: 'POST'}).then(() => {
+        loadQuotaHistory();
+        loadQuotaBadge();
+    });
+}
 async function checkQuotaChanges() {
     try {
         const resp = await fetch('/qdii/api/quota/changes');
@@ -1318,12 +1437,16 @@ async function checkQuotaChanges() {
         }
         document.getElementById('quotaNoticeContent').innerHTML = lines.join('<br>');
         document.getElementById('quotaNotice').style.display = 'flex';
+        document.getElementById('quotaNotice').style.cursor = 'pointer';
+        document.getElementById('quotaNotice').title = '点击查看额度变动记录';
+        document.getElementById('quotaNotice').onclick = () => { switchTab('quota'); document.getElementById('quotaNotice').style.display = 'none'; };
     } catch(e) {/* ignore */}
 }
 
 function dismissQuotaNotice() {
     document.getElementById('quotaNotice').style.display = 'none';
     fetch('/qdii/api/quota/ack', { method: 'POST' }).catch(() => {});
+    loadQuotaBadge();
 }
 
 // Check on init and every 15 minutes

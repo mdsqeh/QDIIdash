@@ -11,7 +11,7 @@ import json
 import sqlite3
 import threading
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from flask import Flask, g, jsonify, render_template, request
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -385,10 +385,30 @@ def api_fetch_status():
 
 @app.route('/api/quota/changes')
 def api_quota_changes():
-    """返回未读的额度变动记录。"""
+    """返回未读的额度变动记录（用于 banner 提醒）。"""
     db = get_db()
     rows = db.execute(
-        "SELECT q.*, f.name FROM quota_changes q LEFT JOIN funds f ON q.code = f.code WHERE q.is_read = 0 ORDER BY q.id"
+        "SELECT q.*, f.name FROM quota_changes q LEFT JOIN funds f ON q.code = f.code WHERE q.is_read = 0 ORDER BY q.id DESC LIMIT 50"
+    ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/quota/history')
+def api_quota_history():
+    """返回额度变动历史记录，支持日期和已读状态筛选。"""
+    db = get_db()
+    date = request.args.get('date', date.today().isoformat())
+    is_read = request.args.get('is_read', '')
+    where = "WHERE q.detected_at LIKE ?"
+    params = [f"{date}%"]
+    if is_read == '0':
+        where += " AND q.is_read = 0"
+        params.append(0)
+    elif is_read == '1':
+        where += " AND q.is_read = 1"
+    rows = db.execute(
+        f"SELECT q.*, f.name FROM quota_changes q LEFT JOIN funds f ON q.code = f.code {where} ORDER BY q.id DESC LIMIT 500",
+        params
     ).fetchall()
     return jsonify([dict(r) for r in rows])
 
@@ -399,6 +419,18 @@ def api_quota_ack():
     db = get_db()
     db.execute("UPDATE quota_changes SET is_read = 1 WHERE is_read = 0")
     db.commit()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/quota/ack-single', methods=['POST'])
+def api_quota_ack_single():
+    """将单条额度变动标记为已读。"""
+    db = get_db()
+    data = request.get_json()
+    change_id = data.get('id')
+    if change_id:
+        db.execute("UPDATE quota_changes SET is_read = 1 WHERE id = ?", (change_id,))
+        db.commit()
     return jsonify({'ok': True})
 
 

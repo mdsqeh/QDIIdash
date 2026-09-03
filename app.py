@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from flask import Flask, g, jsonify, render_template, request
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from fetcher import fetch_all, _fetch_incremental
+from fetcher import fetch_all, _fetch_incremental, _fetch_all_codes
 from quota_watcher import check_quotas
 
 app = Flask(__name__)
@@ -189,35 +189,66 @@ def _do_fetch():
 
 
 def _do_fetch_incremental():
-    """增量更新：只更新 nav、daily_change、premium_discount、purchase_status、daily_limit 五个字段。"""
+    """增量更新：只更新 nav、daily_change、premium_discount、purchase_status、daily_limit 五个字段。
+    同时检测并全量采集新增的 QDII 基金。
+    """
     print("⚡ 增量更新开始...", flush=True)
     t_start = datetime.now(timezone.utc)
     try:
         with sqlite3.connect(DB_PATH) as conn:
-            # 获取所有已有基金代码
-            codes = [row[0] for row in conn.execute("SELECT code FROM funds").fetchall()]
-            if not codes:
-                print("⏭️ 数据库无数据，跳过增量更新", flush=True)
-                return
+            existing_codes = {row[0] for row in conn.execute("SELECT code FROM funds").fetchall()}
 
-            records = _fetch_incremental(codes)
+            # 1. 检测新基金：拉取当前最新列表，找出 DB 中没有的
+            print("  🔍 检测新增基金...", flush=True)
+            all_codes = _fetch_all_codes()
+            new_codes = [c for c in all_codes if c not in existing_codes]
+            print(f"  📌 现有 {len(existing_codes)} 只，新增 {len(new_codes)} 只", flush=True)
+
+            new_records = []
+            if new_codes:
+                # 对新增基金做全量 fetch（调用 fetch_all 再过滤）
+                print(f"  📡 全量采集 {len(new_codes)} 只新增基金...", flush=True)
+                all_data = fetch_all()
+                all_code_set = {r['code'] for r in all_data}
+                new_records = [r for r in all_data if r['code'] in all_code_set and r['code'] in set(new_codes)]
+
+            # 2. 已有基金：只更新 5 个动态字段
+            db_codes = list(existing_codes)
+            records = _fetch_incremental(db_codes) if db_codes else []
+
+            # 3. 合并写入：新增基金用 INSERT，已有基金用 UPDATE
             now = datetime.now(timezone.utc).isoformat()
+            if new_records:
+                conn.executemany(
+                    """INSERT OR REPLACE INTO funds
+                       (code, name, ftype, market, nav, acc_nav, ret_1y, ret_2y, ret_3y, ret_4y, ret_5y, ret_10y,
+                        ret_ann, total_ret, est_date, mgmt_fee, cust_fee, sale_fee, purchase_status, daily_limit,
+                        premium_discount, daily_change, upd_date)
+                       VALUES (:code, :name, :ftype, :market, :nav, :acc_nav, :ret_1y, :ret_2y, :ret_3y, :ret_4y,
+                               :ret_5y, :ret_10y, :ret_ann, :total_ret, :est_date, :mgmt_fee, :cust_fee, :sale_fee,
+                               :purchase_status, :daily_limit, :premium_discount, :daily_change, :upd_date)""",
+                    new_records
+                )
+                print(f"  ✅ 新增基金已入库: {len(new_records)} 只", flush=True)
 
-            conn.executemany(
-                """UPDATE funds
-                   SET nav = :nav,
-                       daily_change = :daily_change,
-                       premium_discount = :premium_discount,
-                       purchase_status = :purchase_status,
-                       daily_limit = :daily_limit,
-                       upd_date = :upd_date
-                   WHERE code = :code""",
-                records
-            )
+            if records:
+                conn.executemany(
+                    """UPDATE funds
+                       SET nav = :nav,
+                           daily_change = :daily_change,
+                           premium_discount = :premium_discount,
+                           purchase_status = :purchase_status,
+                           daily_limit = :daily_limit,
+                           upd_date = :upd_date
+                       WHERE code = :code""",
+                    records
+                )
+                updated = sum(1 for r in records if r['nav'] is not None or r['daily_change'] is not None or r['premium_discount'] is not None)
+                print(f"  ✅ 已有基金更新完成，共 {len(records)} 只，更新 {updated} 只", flush=True)
+
             conn.commit()
         elapsed = (datetime.now(timezone.utc) - t_start).total_seconds()
-        updated = sum(1 for r in records if r['nav'] is not None or r['daily_change'] is not None or r['premium_discount'] is not None)
-        print(f"✅ 增量更新完成，耗时 {elapsed:.0f}s，更新了 {updated} 条", flush=True)
+        print(f"✅ 增量更新完成，耗时 {elapsed:.0f}s，新增 {len(new_records)} 只", flush=True)
     except Exception as e:
         elapsed = (datetime.now(timezone.utc) - t_start).total_seconds()
         print(f"❌ 增量更新失败（{elapsed:.0f}s）: {e}", flush=True)
@@ -363,11 +394,11 @@ def api_quota_ack():
 def _start_scheduler():
     """启动定时采集任务。"""
     scheduler = BackgroundScheduler(timezone='Asia/Shanghai')
-    scheduler.add_job(_do_fetch, 'cron', hour=21, minute=0, id='daily_fetch')
+    scheduler.add_job(_do_fetch, 'cron', day_of_month=1, hour=21, minute=0, id='monthly_fetch')
     scheduler.add_job(_do_fetch_incremental, 'cron', hour=22, minute=0, id='daily_incremental')
     scheduler.add_job(_do_check_quota, 'cron', day_of_week='mon-fri', hour='9-19', minute=0, id='quota_check')
     scheduler.start()
-    print("📅 定时任务已启动：QDII 每天 21:00 全量采集，22:00 增量更新，额度监控交易日 9:00-19:00 每小时")
+    print("📅 定时任务已启动：每月1号 21:00 全量采集，每日 22:00 增量更新，额度监控交易日 9:00-19:00 每小时")
 
 
 if __name__ == '__main__':

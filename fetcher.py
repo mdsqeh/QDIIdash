@@ -28,6 +28,14 @@ def _find_col(df, suffix, qdii_codes=None):
     )
 
 
+def _fetch_all_codes():
+    """获取当前所有 QDII 基金代码列表（用于增量检测新基金）。"""
+    all_funds_df = ak.fund_name_em()
+    qdii_df = all_funds_df[all_funds_df['基金类型'].astype(str).str.contains('QDII|海外股票', na=False)].copy()
+    qdii_df.rename(columns={'基金代码': 'code'}, inplace=True)
+    return [str(c) for c in qdii_df['code'].unique().tolist()]
+
+
 def _fetch_fund_extra(codes):
     """单线程获取 QDII 基金的成立日期和区间涨跌幅（AKShare 内部 V8 不支持并发）。
 

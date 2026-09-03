@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from flask import Flask, g, jsonify, render_template, request
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from fetcher import fetch_all
+from fetcher import fetch_all, _fetch_incremental
 from quota_watcher import check_quotas
 
 app = Flask(__name__)
@@ -188,6 +188,41 @@ def _do_fetch():
         _fetch_lock.release()
 
 
+def _do_fetch_incremental():
+    """增量更新：只更新 nav、daily_change、premium_discount、purchase_status、daily_limit 五个字段。"""
+    print("⚡ 增量更新开始...", flush=True)
+    t_start = datetime.now(timezone.utc)
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            # 获取所有已有基金代码
+            codes = [row[0] for row in conn.execute("SELECT code FROM funds").fetchall()]
+            if not codes:
+                print("⏭️ 数据库无数据，跳过增量更新", flush=True)
+                return
+
+            records = _fetch_incremental(codes)
+            now = datetime.now(timezone.utc).isoformat()
+
+            conn.executemany(
+                """UPDATE funds
+                   SET nav = :nav,
+                       daily_change = :daily_change,
+                       premium_discount = :premium_discount,
+                       purchase_status = :purchase_status,
+                       daily_limit = :daily_limit,
+                       upd_date = :upd_date
+                   WHERE code = :code""",
+                records
+            )
+            conn.commit()
+        elapsed = (datetime.now(timezone.utc) - t_start).total_seconds()
+        updated = sum(1 for r in records if r['nav'] is not None or r['daily_change'] is not None or r['premium_discount'] is not None)
+        print(f"✅ 增量更新完成，耗时 {elapsed:.0f}s，更新了 {updated} 条", flush=True)
+    except Exception as e:
+        elapsed = (datetime.now(timezone.utc) - t_start).total_seconds()
+        print(f"❌ 增量更新失败（{elapsed:.0f}s）: {e}", flush=True)
+
+
 # ── 日额度监控（高频检测） ─────────────────────────────────────
 
 WEBHOOK_URL = 'http://127.0.0.1:3000/webhook/cme'
@@ -329,10 +364,11 @@ def _start_scheduler():
     """启动定时采集任务。"""
     scheduler = BackgroundScheduler(timezone='Asia/Shanghai')
     scheduler.add_job(_do_fetch, 'cron', hour=21, minute=0, id='daily_fetch')
+    scheduler.add_job(_do_fetch_incremental, 'cron', hour=22, minute=0, id='daily_incremental')
     scheduler.add_job(_do_check_quota, 'cron', day_of_week='mon-fri', hour='9-14', minute='*/30', id='quota_check')
     scheduler.add_job(_do_check_quota, 'cron', day_of_week='mon-fri', hour=15, minute=0, id='quota_check_1500')
     scheduler.start()
-    print("📅 定时采集已启动：QDII 每天 21:00（北京时间），额度监控交易日 9:00-15:00 每 30min")
+    print("📅 定时任务已启动：QDII 每天 21:00 全量采集，22:00 增量更新，额度监控交易日 9:00-15:00 每 30min")
 
 
 if __name__ == '__main__':

@@ -478,6 +478,7 @@ const TAB_CONFIG = {
             {key:'market',   label:'市场',     thStyle:'',             tdClass:'',           tdStyle:'', render:(r)=>r.market==='场内'?'<span class="badge badge-exchange">场内</span>':'<span class="badge badge-otc">场外</span>'},
             {key:'nav',      label:'最新净值', thStyle:'',             tdClass:'',           tdStyle:'font-family:var(--font-display)', render:(r)=>fmtNum(r.nav)},
             {key:'daily_change', label:'日增长率', thStyle:'',             tdClass:'',           tdStyle:'font-family:var(--font-display);font-weight:600', render:(r)=>fmtPctClass(r.daily_change)},
+            {key:'premium_discount', label:'折溢价率', thStyle:'',       tdClass:'',           tdStyle:'font-family:var(--font-display);font-weight:600', render:(r)=>fmtPctClass(r.premium_discount)},
             {key:'ret_1y',   label:'近1年',    thStyle:'',             tdClass:'',           tdStyle:'font-family:var(--font-display);font-weight:600', render:(r)=>fmtPctClass(r.ret_1y)},
             {key:'ret_2y',   label:'近2年',    thStyle:'',             tdClass:'',           tdStyle:'font-family:var(--font-display);font-weight:600', render:(r)=>fmtPctClass(r.ret_2y)},
             {key:'ret_3y',   label:'近3年',    thStyle:'',             tdClass:'',           tdStyle:'font-family:var(--font-display);font-weight:600', render:(r)=>fmtPctClass(r.ret_3y)},
@@ -504,6 +505,7 @@ const TAB_CONFIG = {
             {value:'ret_4y', label:'近4年涨跌'},
             {value:'ret_5y', label:'近5年涨跌'},
             {value:'ret_10y', label:'近10年涨跌'},
+            {value:'premium_discount', label:'折溢价率'},
             {value:'ret_ann', label:'成立来年化'},
             {value:'total_ret', label:'成立来总收益'},
             {value:'purchase_status', label:'申购状态'},
@@ -511,8 +513,8 @@ const TAB_CONFIG = {
         statsKeys: ['total', 'pos_1y', 'ret_ann_gt_20'],
         statsLabels: ['全部', '成立以来每年正收益', '年化 > 20%'],
         statsFilters: [null, 'pos_1y', 'ann_gt'],
-        csvHeaders: ['基金代码','基金简称','基金类型','类型','最新净值','日增长率','近1年涨跌幅','近2年涨跌幅','近3年涨跌幅','近4年涨跌幅','近5年涨跌幅','近10年涨跌幅','成立来年化收益','成立来总收益','管理费','托管费','成立日期','更新日期','申购状态','日累计额度'],
-        csvKeys: ['code','name','ftype','market','nav','daily_change','ret_1y','ret_2y','ret_3y','ret_4y','ret_5y','ret_10y','ret_ann','total_ret','mgmt_fee','cust_fee','est_date','upd_date','purchase_status','daily_limit'],
+        csvHeaders: ['基金代码','基金简称','基金类型','类型','市场','最新净值','日增长率','折溢价率','近1年涨跌幅','近2年涨跌幅','近3年涨跌幅','近4年涨跌幅','近5年涨跌幅','近10年涨跌幅','成立来年化收益','成立来总收益','管理费','托管费','成立日期','更新日期','申购状态','日累计额度'],
+        csvKeys: ['code','name','ftype','market','nav','daily_change','premium_discount','ret_1y','ret_2y','ret_3y','ret_4y','ret_5y','ret_10y','ret_ann','total_ret','mgmt_fee','cust_fee','est_date','upd_date','purchase_status','daily_limit'],
     },
 };
 

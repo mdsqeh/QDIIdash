@@ -283,6 +283,115 @@ def _fetch_cumulative_returns(codes):
     return results
 
 
+def _fetch_incremental(codes):
+    """增量采集：只更新单位净值、日增长率、折溢价率、申购状态、日额度。
+
+    调用 fetcher.py 的已有函数，返回 list[dict]，每项只含 5 个可更新字段 + code。
+    """
+    codes_str = list(map(str, codes))
+    codes_set = set(codes_str)
+
+    # 1. 场外基金最新净值（单位净值 + 累计净值）
+    print("  📡 增量：获取场外基金最新净值...", flush=True)
+    all_daily = ak.fund_open_fund_daily_em()
+    nav_col = _find_col(all_daily, '单位净值', codes_set)
+    acc_nav_col = _find_col(all_daily, '累计净值', codes_set)
+    if nav_col:
+        open_nav = all_daily[all_daily['基金代码'].astype(str).isin(codes_set)][
+            ['基金代码', nav_col, acc_nav_col]
+        ].copy()
+        open_nav.rename(columns={'基金代码': 'code', nav_col: 'nav', acc_nav_col: 'acc_nav'}, inplace=True)
+    else:
+        open_nav = pd.DataFrame(columns=['code', 'nav', 'acc_nav'])
+
+    # 2. 交易所基金净值（补齐场内基金的 nav）
+    print("  📡 增量：获取场内基金净值...", flush=True)
+    exchange_prices = {}
+    exchange_changes = {}
+    exch_codes = set()
+    try:
+        exch_df = ak.fund_exchange_rank_em()
+        exch_sub = exch_df[exch_df['基金代码'].astype(str).isin(codes_set)][
+            ['基金代码', '单位净值']
+        ].copy()
+        exch_sub.rename(columns={'基金代码': 'code', '单位净值': 'nav_ex'}, inplace=True)
+        exch_codes = set(exch_sub['code'].tolist())
+        open_nav = pd.concat([open_nav, exch_sub[['code', 'nav_ex']]], ignore_index=True)
+    except Exception:
+        pass
+
+    # 3. 场内实时行情（折溢价率 + 日增长率）
+    print("  📡 增量：获取场内实时行情...", flush=True)
+    try:
+        etf_df = ak.fund_etf_spot_em()
+        etf_df['代码'] = etf_df['代码'].astype(str)
+        for _, row in etf_df[etf_df['代码'].isin(codes_set)].iterrows():
+            code = str(row['代码'])
+            try:
+                exchange_prices[code] = float(row['最新价'])
+                exchange_changes[code] = float(row['涨跌幅'])
+            except (ValueError, TypeError):
+                pass
+    except Exception:
+        pass
+    try:
+        lof_df = ak.fund_lof_spot_em()
+        lof_df['代码'] = lof_df['代码'].astype(str)
+        for _, row in lof_df[lof_df['代码'].isin(codes_set)].iterrows():
+            code = str(row['代码'])
+            if code not in exchange_prices:  # ETF 优先
+                try:
+                    exchange_prices[code] = float(row['最新价'])
+                    exchange_changes[code] = float(row['涨跌幅'])
+                except (ValueError, TypeError):
+                    pass
+    except Exception:
+        pass
+
+    # 4. 申购状态 & 日额度
+    print("  📡 增量：获取申购状态...", flush=True)
+    purchase_data = _fetch_fund_purchase_status(codes)
+
+    # 5. 构建结果（所有 QDII 基金都出现在结果里，缺失字段为 None）
+    nav_map = open_nav.set_index('code')['nav'].to_dict() if not open_nav.empty else {}
+    exch_nav_map = open_nav.set_index('code')['nav_ex'].to_dict() if 'nav_ex' in open_nav.columns else {}
+
+    results = []
+    for code in codes:
+        code_s = str(code)
+        nav = nav_map.get(code_s)
+        if nav is None and code_s in exch_codes:
+            nav = exch_nav_map.get(code_s)
+        nav = pd.to_numeric(nav, errors='coerce') if nav is not None else None
+
+        daily_change = exchange_changes.get(code_s)
+        if daily_change is not None:
+            daily_change = round(float(daily_change), 2)
+
+        premium_discount = None
+        if code_s in exchange_prices and nav is not None and float(nav) > 0:
+            mp = exchange_prices[code_s]
+            premium_discount = round((mp / float(nav) - 1) * 100, 2)
+
+        purchase = purchase_data.get(code_s, {})
+        purchase_status = purchase.get('purchase_status')
+        daily_limit_raw = purchase.get('daily_limit')
+        # 保持与 fetch_all() 一致的 daily_limit 类型（None 或原始值）
+        daily_limit = daily_limit_raw if daily_limit_raw is not None else None
+
+        results.append({
+            'code': code_s,
+            'nav': float(nav) if nav is not None else None,
+            'daily_change': daily_change,
+            'premium_discount': premium_discount,
+            'purchase_status': purchase_status,
+            'daily_limit': daily_limit,
+        })
+
+    print(f"  ✅ 增量采集完成，共 {len(results)} 条", flush=True)
+    return results
+
+
 def _fetch_fund_purchase_status(codes):
     """获取基金申购状态和日累计限定金额。
 

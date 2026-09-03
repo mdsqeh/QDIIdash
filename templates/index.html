@@ -693,7 +693,7 @@ function switchTab(tab) {
         if (cfg.statsLabels[2]) {
             document.getElementById('statPosLbl').textContent = cfg.statsLabels[1];
             document.getElementById('statThirdLbl').textContent = '年化 > ' + state.annThreshold + '%';
-            thirdItem.onclick = function() { setFilter(cfg.statsFilters[2]); };
+            thirdItem.onclick = function() { setFilter(cfg.statsFilters[2], true); };
             thirdItem.style.display = '';
         } else {
             thirdItem.style.display = 'none';

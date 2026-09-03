@@ -1,6 +1,4 @@
 """
-AKShare 数据采集引擎 — 从东方财富（天天基金）获取 QDII 基金数据。
-
 独立于 Web 框架，可在后台线程中调用 fetch_all() 获取全量数据。
 返回 list[dict]，可直接存入 SQLite 或序列化为 JSON。
 """

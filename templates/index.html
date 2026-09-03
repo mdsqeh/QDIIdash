@@ -684,7 +684,7 @@ function switchTab(tab) {
     document.getElementById('pagination').style.display = isQdii ? '' : 'none';
 
     if (isQdii) {
-        sel = document.getElementById('mobileSort');
+        const sel = document.getElementById('mobileSort');
         sel.innerHTML = cfg.sortOptions.map(o => `<option value="${o.value}">${o.label}</option>`).join('');
         sel.value = state.sort;
         document.getElementById('mobileOrderBtn').textContent = '↑';

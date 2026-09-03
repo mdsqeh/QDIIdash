@@ -468,7 +468,7 @@ const TAB_CONFIG = {
         api: '/qdii/api/funds',
         statsApi: '/qdii/api/stats',
         dataSource: 'AKShare',
-        footer: '每月1号全量，每日22:00增量',
+        footer: '每月1号全量，每日21:00增量',
         columns: [
             {key:'_star', label:'自选', thStyle:'width:36px;text-align:center;cursor:default', tdStyle:'text-align:center;padding:4px', render:(r)=>{const w=state.watchlist.includes(r.code);return '<span class="star '+(w?'star-on':'star-off')+'" onclick="event.stopPropagation();toggleWatch(\''+r.code+'\')">'+(w?'⊡':'☐')+'</span>';}},
             {key:'_rating', label:'自评级', thStyle:'width:90px;text-align:center;cursor:default', tdStyle:'text-align:center;padding:4px;white-space:nowrap', render:(r)=>{const rt=state.ratings[r.code]||0;let h='';for(let i=1;i<=5;i++){h+='<span class="rstar '+(i<=rt?'rstar-on':'rstar-off')+'" onclick="event.stopPropagation();setRating(\''+r.code+'\','+i+')">'+(i<=rt?'★':'☆')+'</span>';}return h;}},

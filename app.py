@@ -24,6 +24,7 @@ app = Flask(__name__)
 # ── 数据库路径（放在 qdii 目录下） ──────────────────────────────
 DB_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(DB_DIR, 'qdii.db')
+_FULL_FETCH_FLAG = DB_PATH + '.full_fetch_flag'
 
 
 def get_db():
@@ -173,6 +174,8 @@ def _do_fetch():
             conn.commit()
         elapsed = (datetime.now(timezone.utc) - t_start).total_seconds()
         print(f"✅ 采集完成，耗时 {elapsed:.0f}s，共 {len(records)} 条", flush=True)
+        with open(_FULL_FETCH_FLAG, 'w') as f:
+            f.write(datetime.now(timezone.utc).isoformat())
     except Exception as e:
         elapsed = (datetime.now(timezone.utc) - t_start).total_seconds()
         print(f"❌ 采集失败（{elapsed:.0f}s）: {e}", flush=True)
@@ -190,8 +193,18 @@ def _do_fetch():
 
 def _do_fetch_incremental():
     """增量更新：只更新 nav、daily_change、premium_discount、purchase_status、daily_limit 五个字段。
-    同时检测并全量采集新增的 QDII 基金。
+    同时检测并全量采集新增的 QDII 基金。全量采集当日跳过。
     """
+    # 全量采集当日跳过增量更新
+    try:
+        with open(_FULL_FETCH_FLAG) as f:
+            flag_date = f.read().strip()
+        if flag_date == date.today().isoformat():
+            print("⏭️ 今日已是全量更新日，跳过增量", flush=True)
+            return
+    except FileNotFoundError:
+        pass
+
     print("⚡ 增量更新开始...", flush=True)
     t_start = datetime.now(timezone.utc)
     try:
@@ -395,10 +408,10 @@ def _start_scheduler():
     """启动定时采集任务。"""
     scheduler = BackgroundScheduler(timezone='Asia/Shanghai')
     scheduler.add_job(_do_fetch, 'cron', day_of_month=1, hour=21, minute=0, id='monthly_fetch')
-    scheduler.add_job(_do_fetch_incremental, 'cron', hour=22, minute=0, id='daily_incremental')
+    scheduler.add_job(_do_fetch_incremental, 'cron', hour=21, minute=0, id='daily_incremental')
     scheduler.add_job(_do_check_quota, 'cron', day_of_week='mon-fri', hour='9-19', minute=0, id='quota_check')
     scheduler.start()
-    print("📅 定时任务已启动：每月1号 21:00 全量采集，每日 22:00 增量更新，额度监控交易日 9:00-19:00 每小时")
+    print("📅 定时任务已启动：每月1号 21:00 全量采集，每日 21:00 增量更新，额度监控交易日 9:00-19:00 每小时")
 
 
 if __name__ == '__main__':

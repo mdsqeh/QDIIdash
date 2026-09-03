@@ -439,7 +439,7 @@ def api_quota_ack_single():
 def _start_scheduler():
     """启动定时采集任务。"""
     scheduler = BackgroundScheduler(timezone='Asia/Shanghai')
-    scheduler.add_job(_do_fetch, 'cron', day_of_month=1, hour=21, minute=0, id='monthly_fetch')
+    scheduler.add_job(_do_fetch, 'cron', day=1, hour=21, minute=0, id='monthly_fetch')
     scheduler.add_job(_do_fetch_incremental, 'cron', hour=21, minute=0, id='daily_incremental')
     scheduler.add_job(_do_check_quota, 'cron', day_of_week='mon-fri', hour='9-19', minute=0, id='quota_check')
     scheduler.start()

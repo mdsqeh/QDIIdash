@@ -1,0 +1,6 @@
+flask>=3.0
+akshare>=1.14
+pandas>=2.0
+apscheduler>=3.10
+yfinance>=0.14
+requests>=2.31

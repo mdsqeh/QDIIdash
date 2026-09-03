@@ -1,0 +1,1330 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QDII 基金数据看板</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+    :root {
+        --bg: #0B1120;
+        --surface: #111B2E;
+        --surface-hover: #162240;
+        --surface-border: #1E2D45;
+        --text: #E8EDF5;
+        --text-sub: #8899B4;
+        --text-muted: #5A6D8A;
+        --accent: #F59E0B;
+        --accent-glow: rgba(245, 158, 11, 0.12);
+        --green: #10B981;
+        --green-bg: rgba(16, 185, 129, 0.10);
+        --red: #F43F5E;
+        --red-bg: rgba(244, 63, 94, 0.10);
+        --radius: 12px;
+        --radius-sm: 8px;
+        --shadow: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
+        --font-display: 'Outfit', -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        --font-body: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+        font-family: var(--font-body);
+        background: var(--bg);
+        color: var(--text);
+        min-height: 100vh;
+        background-image:
+            radial-gradient(ellipse 80% 50% at 50% -10%, rgba(245, 158, 11, 0.03) 0%, transparent 100%),
+            radial-gradient(ellipse 60% 40% at 80% 90%, rgba(16, 185, 129, 0.02) 0%, transparent 100%);
+    }
+    .container { max-width: 2000px; margin: 0 auto; padding: 18px 20px; }
+
+    /* ── Tabs ── */
+    .tabs {
+        display: flex; gap: 4px; margin-bottom: 10px;
+        background: var(--surface); border: 1px solid var(--surface-border);
+        border-radius: var(--radius); padding: 3px; width: fit-content;
+    }
+    .tab-btn {
+        padding: 7px 18px; border: none; border-radius: var(--radius-sm);
+        cursor: pointer; font-size: 0.85rem; font-weight: 600;
+        font-family: var(--font-display); letter-spacing: 0.02em;
+        background: transparent; color: var(--text-sub);
+        transition: all 0.2s;
+    }
+    .tab-btn:hover { color: var(--text); background: var(--surface-hover); }
+    .tab-btn.active {
+        background: linear-gradient(135deg, #D97706, #F59E0B);
+        color: #0B1120; box-shadow: 0 2px 10px rgba(245,158,11,0.2);
+    }
+
+    /* ── Header ── */
+    .header { display: flex; align-items: flex-end; gap: 10px; margin-bottom: 2px; flex-wrap: wrap; }
+    .header-left { flex: 1; }
+    .header-title-row {
+        display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+    }
+    h1 {
+        font-family: var(--font-display);
+        font-size: 1.45rem; font-weight: 700; letter-spacing: -0.02em;
+        background: linear-gradient(135deg, #F5E8B7 0%, #F59E0B 100%);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        background-clip: text;
+    }
+    .header-meta {
+        color: var(--text-sub); margin-top: 0; font-size: 0.8rem;
+        display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    }
+    .header-badge {
+        display: inline-block; padding: 2px 8px; border-radius: 20px;
+        font-size: 0.7rem; font-weight: 600; letter-spacing: 0.04em;
+        background: var(--accent-glow); color: var(--accent);
+        border: 1px solid rgba(245, 158, 11, 0.2);
+        margin-left: 10px; vertical-align: middle;
+        font-family: var(--font-display);
+    }
+    .subtitle {
+        color: var(--text-sub); margin-bottom: 14px; font-size: 0.82rem;
+        display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    }
+    .subtitle .sep { color: var(--text-muted); font-size: 0.7rem; }
+    .subtitle strong { font-family: var(--font-display); color: var(--text); }
+
+    /* ── Stats ── */
+    .stat { display: flex; gap: 10px; margin-bottom: 14px; }
+    .stat-item {
+        background: var(--surface); border: 1px solid var(--surface-border);
+        border-radius: var(--radius); padding: 12px 18px; flex: 1; text-align: center;
+        position: relative; overflow: hidden;
+        transition: transform 0.2s, border-color 0.2s;
+    }
+    .stat-item:hover { transform: translateY(-1px); border-color: rgba(245,158,11,0.15); }
+    .stat-item.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 20px var(--accent-glow); }
+    .stat-item .num {
+        font-family: var(--font-display); font-size: 1.3rem; font-weight: 700;
+        color: var(--accent); letter-spacing: -0.02em;
+    }
+    .stat-item .lbl { font-size: 0.75rem; color: var(--text-muted); margin-top: 2px; font-weight: 500; }
+
+    /* ── Toolbar ── */
+    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; align-items: center; }
+    .search {
+        padding: 8px 12px; border: 1px solid var(--surface-border); border-radius: var(--radius-sm);
+        background: var(--surface); color: var(--text); width: 200px;
+        font-size: 0.85rem; outline: none; transition: border-color 0.2s;
+        font-family: var(--font-body);
+    }
+    .search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+    .search::placeholder { color: var(--text-muted); }
+    .btn {
+        padding: 8px 16px; border: none; border-radius: var(--radius-sm); cursor: pointer;
+        font-size: 0.85rem; font-weight: 600; transition: all 0.15s;
+        font-family: var(--font-body); letter-spacing: 0.02em;
+    }
+    .btn-primary {
+        background: linear-gradient(135deg, #D97706, #F59E0B);
+        color: #0B1120;
+    }
+    .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 15px rgba(245,158,11,0.25); }
+    .btn-outline {
+        background: var(--surface); border: 1px solid var(--surface-border); color: var(--text-sub);
+    }
+    .btn-outline:hover { background: var(--surface-hover); border-color: var(--text-muted); color: var(--text); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none !important; }
+    .fetch-status { color: var(--text-muted); font-size: 0.8rem; }
+
+    /* ── Mobile Sort ── */
+    .mobile-sort { display: none; }
+    .sort-select {
+        padding: 9px 12px; border: 1px solid var(--surface-border); border-radius: var(--radius-sm);
+        background: var(--surface); color: var(--text); width: 155px;
+        font-size: 0.85rem; outline: none; cursor: pointer;
+        font-family: var(--font-body);
+    }
+    .sort-select:focus { border-color: var(--accent); }
+
+    /* ── Table ── */
+    .table-wrap {
+        overflow-x: auto;
+        border-radius: var(--radius);
+        border: 1px solid var(--surface-border); background: var(--surface);
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    th {
+        background: #0F1929; padding: 10px 8px; text-align: left;
+        font-weight: 600; border-bottom: 1px solid var(--surface-border);
+        cursor: pointer; user-select: none; white-space: nowrap;
+        color: var(--text-sub); font-size: 0.78rem; letter-spacing: 0.03em;
+        font-family: var(--font-display); text-transform: uppercase;
+        position: sticky; top: 0; z-index: 1;
+    }
+    th:hover { color: var(--accent); }
+    td {
+        padding: 8px; border-bottom: 1px solid rgba(30, 45, 69, 0.4);
+        font-family: var(--font-body); font-size: 0.82rem;
+        transition: background 0.1s;
+    }
+    tbody tr:hover td { background: var(--surface-hover); }
+    tr:last-child td { border-bottom: none; }
+    .up { color: var(--green); }
+    .down { color: var(--red); }
+    .badge {
+        display: inline-block; padding: 2px 8px; border-radius: 10px;
+        font-size: 0.7rem; font-weight: 600; font-family: var(--font-display);
+    }
+    .badge-qdii { background: var(--accent-glow); color: var(--accent); }
+    .badge-exchange { background: var(--green-bg); color: var(--green); }
+    .badge-otc { background: rgba(136,153,180,0.1); color: var(--text-sub); }
+    .badge-lowfee { background: var(--green-bg); color: var(--green); }
+    .badge-assets { background: rgba(136,153,180,0.1); color: var(--text-sub); }
+    .code-link {
+        color: var(--accent); text-decoration: none;
+    }
+    .code-link:hover {
+        text-decoration: underline;
+    }
+
+    /* ── Watchlist Star ── */
+    .star { cursor: pointer; user-select: none; font-size: 1.05rem; transition: transform 0.15s, color 0.15s; display: inline-block; line-height: 1; }
+    .star:hover { transform: scale(1.25); }
+    .star-off { color: var(--text-muted); opacity: 0.5; }
+    .star-on { color: var(--accent); text-shadow: 0 0 8px rgba(245,158,11,0.5); }
+    .btn-star {
+        background: transparent; border: none; cursor: pointer;
+        padding: 0 2px; font-size: 1.05rem; line-height: 1;
+        transition: transform 0.15s;
+    }
+    .btn-star:hover { transform: scale(1.25); }
+    #watchlistBtn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-glow); }
+
+    /* ── Rating ── */
+    .rstar { cursor: pointer; user-select: none; font-size: 0.85rem; transition: transform 0.1s; display: inline-block; line-height: 1; }
+    .rstar:hover { transform: scale(1.3); }
+    .rstar-on { color: var(--accent); text-shadow: 0 0 4px rgba(245,158,11,0.4); }
+    .rstar-off { color: var(--text-muted); opacity: 0.25; }
+    .rstar-off:hover { opacity: 0.6; }
+
+    /* ── Card List (Mobile) ── */
+    .card-list { display: none; }
+
+    /* ── Pagination ── */
+    .pagination { display: flex; justify-content: center; align-items: center; gap: 14px; margin-top: 20px; }
+    .pagination .info { color: var(--text-muted); font-size: 0.82rem; font-family: var(--font-display); }
+
+    /* ── Column Filter ── */
+    .th-filter {
+        display: inline-block; margin-left: 4px; cursor: pointer;
+        font-size: 0.55rem; opacity: 0.35; vertical-align: middle;
+        user-select: none; transition: opacity 0.15s, color 0.15s;
+        line-height: 1; pointer-events: auto;
+    }
+    th:hover .th-filter { opacity: 0.7; }
+    .th-filter:hover { opacity: 1 !important; color: var(--accent) !important; }
+    .filter-active .th-filter { opacity: 1; color: var(--accent); }
+
+    .filter-dropdown {
+        position: fixed; z-index: 300; min-width: 210px; max-width: 320px;
+        background: var(--surface); border: 1px solid var(--surface-border);
+        border-radius: var(--radius-sm); box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+        display: none; flex-direction: column;
+        font-family: var(--font-body); font-size: 0.78rem;
+    }
+    .filter-dropdown.show { display: flex; }
+    .filter-dropdown .fd-header {
+        padding: 9px 12px; border-bottom: 1px solid var(--surface-border);
+        display: flex; justify-content: space-between; align-items: center;
+        font-weight: 600; font-size: 0.75rem; color: var(--text-sub);
+    }
+    .filter-dropdown .fd-clear {
+        cursor: pointer; color: var(--accent); font-weight: 600;
+        font-size: 0.72rem; transition: opacity 0.15s;
+    }
+    .filter-dropdown .fd-clear:hover { opacity: 0.75; }
+    .filter-dropdown .fd-search {
+        padding: 8px 10px; border-bottom: 1px solid var(--surface-border);
+    }
+    .filter-dropdown .fd-search input {
+        width: 100%; padding: 5px 8px; border: 1px solid var(--surface-border);
+        border-radius: 4px; background: var(--bg); color: var(--text);
+        font-size: 0.78rem; outline: none; font-family: var(--font-body);
+    }
+    .filter-dropdown .fd-search input:focus { border-color: var(--accent); }
+    .filter-dropdown .fd-body {
+        flex: 1; overflow-y: auto; max-height: 260px; padding: 4px 0;
+    }
+    .filter-dropdown .fd-item {
+        padding: 5px 12px; cursor: pointer; display: flex;
+        align-items: center; gap: 8px; transition: background 0.1s;
+        user-select: none; white-space: nowrap;
+    }
+    .filter-dropdown .fd-item:hover { background: var(--surface-hover); }
+    .filter-dropdown .fd-item input[type="checkbox"] {
+        accent-color: var(--accent); margin: 0; flex-shrink: 0;
+        cursor: pointer;
+    }
+    .filter-dropdown .fd-item .fd-count {
+        margin-left: auto; color: var(--text-muted); font-size: 0.7rem;
+    }
+    .filter-dropdown .fd-actions {
+        padding: 8px 12px; border-top: 1px solid var(--surface-border);
+        display: flex; gap: 8px; justify-content: flex-end;
+    }
+    .filter-dropdown .fd-btn {
+        padding: 5px 14px; border: none; border-radius: 4px; cursor: pointer;
+        font-size: 0.75rem; font-weight: 600; font-family: var(--font-body);
+        transition: opacity 0.15s;
+    }
+    .filter-dropdown .fd-btn:hover { opacity: 0.85; }
+    .filter-dropdown .fd-btn-primary {
+        background: var(--accent); color: #0B1120;
+    }
+    .filter-dropdown .fd-btn-outline {
+        background: transparent; color: var(--text-sub);
+        border: 1px solid var(--surface-border);
+    }
+
+    /* ── Footer ── */
+    .footer { text-align: center; margin-top: 20px; color: var(--text-muted); font-size: 0.72rem; letter-spacing: 0.02em; padding-bottom: 12px; }
+
+    /* ── Toast ── */
+    .toast {
+        position: fixed; top: 24px; right: 24px; padding: 14px 22px; border-radius: var(--radius-sm);
+        color: #0B1120; font-size: 0.85rem; font-weight: 600; z-index: 999;
+        opacity: 0; pointer-events: none; transition: opacity 0.3s, transform 0.3s;
+        transform: translateY(-8px); font-family: var(--font-body);
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.info { background: linear-gradient(135deg, #D97706, #F59E0B); }
+    .toast.success { background: linear-gradient(135deg, #059669, #10B981); }
+    .toast.error { background: linear-gradient(135deg, #BE123C, #F43F5E); }
+
+    /* ── Quota Notice Banner ── */
+    .quota-notice {
+        background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.2);
+        border-radius: var(--radius-sm); padding: 8px 14px; margin-bottom: 12px;
+        display: none; align-items: center; justify-content: space-between; gap: 12px;
+        font-size: 0.85rem; line-height: 1.5; color: var(--text);
+    }
+    .quota-notice-content { flex: 1; }
+    .quota-notice-close {
+        background: none; border: none; color: var(--text-muted); cursor: pointer;
+        font-size: 1.2rem; padding: 0 4px; line-height: 1; flex-shrink: 0;
+    }
+    .quota-notice-close:hover { color: var(--text); }
+
+    /* ── Scrollbar ── */
+    .table-wrap::-webkit-scrollbar { height: 6px; }
+    .table-wrap::-webkit-scrollbar-track { background: transparent; }
+    .table-wrap::-webkit-scrollbar-thumb { background: var(--surface-border); border-radius: 3px; }
+    .table-wrap::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+    /* ── Responsive <768px ── */
+    @media (max-width: 768px) {
+        .container { padding: 16px 12px; }
+        h1 { font-size: 1.2rem; }
+        .header-badge { display: none; }
+        .header-title-row { gap: 6px; align-items: center; }
+        .subtitle { font-size: 0.75rem; gap: 6px; margin-bottom: 16px; }
+        .stat { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+        .stat-item { padding: 12px 10px; min-width: 0; grid-column: span 2; }
+        .stat-item:nth-child(4),
+        .stat-item:nth-child(5) { grid-column: span 3; }
+        .stat-item .num { font-size: 1.1rem; }
+        .toolbar { gap: 8px; }
+        .search { width: 100%; }
+        .tabs { width: 100%; }
+        .tab-btn { flex: 1; text-align: center; padding: 8px 12px; font-size: 0.8rem; }
+        .table-wrap { display: none; }
+
+        .mobile-sort { display: flex; align-items: center; gap: 8px; flex: 1; }
+        .card-list { display: flex; flex-direction: column; gap: 10px; }
+
+        .fund-card {
+            background: var(--surface); border: 1px solid var(--surface-border);
+            border-radius: var(--radius); padding: 14px;
+            transition: border-color 0.2s;
+        }
+        .fund-card:active { border-color: rgba(245,158,11,0.25); }
+
+        .card-header {
+            display: flex; justify-content: space-between; align-items: flex-start;
+            margin-bottom: 10px; padding-bottom: 10px;
+            border-bottom: 1px solid rgba(30, 45, 69, 0.4);
+        }
+        .card-header .code {
+            font-family: var(--font-display); font-weight: 700;
+            color: var(--accent); font-size: 0.85rem;
+        }
+        .card-header .name { font-weight: 600; font-size: 0.85rem; color: var(--text); }
+        .card-header .badges { display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; }
+        .card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; }
+        .card-item {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 4px 0; border-bottom: 1px solid rgba(30, 45, 69, 0.15);
+        }
+        .card-item .label { color: var(--text-muted); font-size: 0.72rem; }
+        .card-item .value { font-weight: 600; font-size: 0.82rem; font-family: var(--font-display); }
+        .card-item .value.up { color: var(--green); }
+        .card-item .value.down { color: var(--red); }
+        .card-full { grid-column: 1 / -1; padding-top: 4px; }
+        .card-full .card-item { justify-content: flex-start; gap: 8px; flex-wrap: wrap; border-bottom: none; }
+        .card-full .card-item .label { min-width: auto; }
+
+        .pagination .info { font-size: 0.72rem; }
+        .pagination { gap: 8px; }
+    }
+</style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <div class="header-left">
+            <div class="header-title-row">
+                <h1>
+                    基金数据看板
+                    <span class="header-badge">● LIVE</span>
+                </h1>
+                <p class="header-meta">
+                    更新于 <span id="updateDate">-</span>
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <div class="stat" id="statBar">
+        <div class="stat-item" id="statAll" onclick="setFilter(null)" style="cursor:pointer;transition:border-color 0.2s"><div class="num" id="cntTotal">-</div><div class="lbl" id="statAllLbl">全部</div></div>
+        <div class="stat-item" id="statPos1y" onclick="setFilter('pos_1y')" style="cursor:pointer;transition:border-color 0.2s"><div class="num" id="cntPos">-</div><div class="lbl" id="statPosLbl">近1年正收益</div></div>
+        <div class="stat-item" id="statThird" onclick="setFilter(null)" style="cursor:pointer;transition:border-color 0.2s"><div class="num" id="cntThird">-</div><div class="lbl" id="statThirdLbl">-</div></div>
+        <div class="stat-item" id="statNasdaq100" onclick="setFilter('nasdaq100')" style="cursor:pointer;transition:border-color 0.2s"><div class="num" id="cntNasdaq100">-</div><div class="lbl">纳斯达克100</div></div>
+        <div class="stat-item" id="statSp500" onclick="setFilter('sp500')" style="cursor:pointer;transition:border-color 0.2s"><div class="num" id="cntSp500">-</div><div class="lbl">标普500</div></div>
+    </div>
+
+    <div class="toolbar">
+        <input type="text" id="searchInput" class="search" placeholder="搜索代码或名称..." oninput="onSearch()">
+        <button class="btn btn-outline" onclick="resetFilter()">清除筛选</button>
+        <button class="btn btn-outline" id="watchlistBtn" onclick="toggleWatchlistFilter()">☐ 自选 (0)</button>
+        <button class="btn btn-primary" onclick="exportCSV()">导出 CSV</button>
+        <button class="btn btn-outline" onclick="exportLocalData()">导出自选</button>
+        <button class="btn btn-outline" onclick="document.getElementById('importInput').click()">导入自选</button>
+        <input type="file" id="importInput" accept=".json" style="display:none" onchange="importLocalData(event)">
+        <span class="fetch-status" id="fetchStatus"></span>
+        <div class="mobile-sort">
+            <select class="sort-select" id="mobileSort" onchange="onMobileSort()"></select>
+            <button class="btn btn-outline" id="mobileOrderBtn" onclick="onMobileOrder()">↑</button>
+        </div>
+    </div>
+
+    <div class="quota-notice" id="quotaNotice">
+        <span class="quota-notice-content" id="quotaNoticeContent"></span>
+        <button class="quota-notice-close" onclick="dismissQuotaNotice()">&times;</button>
+    </div>
+    <div class="table-wrap">
+        <table>
+            <thead id="thead"></thead>
+            <tbody id="tbody"></tbody>
+        </table>
+    </div>
+
+    <div class="card-list" id="cardList"></div>
+
+    <div class="pagination" id="pagination">
+        <button class="btn btn-outline" id="prevBtn" onclick="goPage(-1)">上一页</button>
+        <span class="info" id="pageInfo"></span>
+        <button class="btn btn-outline" id="nextBtn" onclick="goPage(1)">下一页</button>
+    </div>
+
+    <div class="filter-dropdown" id="filterDropdown">
+        <div class="fd-header">
+            <span id="fdTitle">筛选</span>
+            <span class="fd-clear" onclick="clearActiveColumnFilter(event)">清除</span>
+        </div>
+        <div class="fd-search" style="display:none" id="fdSearchWrap">
+            <input type="text" id="fdSearchInput" placeholder="搜索..." oninput="onFilterSearch()" onclick="event.stopPropagation()">
+        </div>
+        <div class="fd-body" id="fdBody">
+            <div class="fd-loading">加载中...</div>
+        </div>
+        <div class="fd-actions" onclick="event.stopPropagation()">
+            <button class="fd-btn fd-btn-outline" onclick="closeFilterDropdown()">取消</button>
+            <button class="fd-btn fd-btn-primary" onclick="applyFilterDropdown()">确定</button>
+        </div>
+    </div>
+
+    <div class="footer">
+        数据仅供参考，不构成投资建议 · 净值涨跌基于最新披露日
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ═══════════════════════════════════════════════════
+// Tab Column Configurations
+// ═══════════════════════════════════════════════════
+
+const TAB_CONFIG = {
+    qdii: {
+        api: '/qdii/api/funds',
+        statsApi: '/qdii/api/stats',
+        dataSource: 'AKShare',
+        footer: '每日 21:00 自动更新',
+        columns: [
+            {key:'_star', label:'自选', thStyle:'width:36px;text-align:center;cursor:default', tdStyle:'text-align:center;padding:4px', render:(r)=>{const w=state.watchlist.includes(r.code);return '<span class="star '+(w?'star-on':'star-off')+'" onclick="event.stopPropagation();toggleWatch(\''+r.code+'\')">'+(w?'⊡':'☐')+'</span>';}},
+            {key:'_rating', label:'自评级', thStyle:'width:90px;text-align:center;cursor:default', tdStyle:'text-align:center;padding:4px;white-space:nowrap', render:(r)=>{const rt=state.ratings[r.code]||0;let h='';for(let i=1;i<=5;i++){h+='<span class="rstar '+(i<=rt?'rstar-on':'rstar-off')+'" onclick="event.stopPropagation();setRating(\''+r.code+'\','+i+')">'+(i<=rt?'★':'☆')+'</span>';}return h;}},
+            {key:'code',     label:'代码',     thStyle:'',             tdClass:'',           tdStyle:'font-family:var(--font-display);font-weight:600;color:var(--accent)', render:(r)=>`<a class="code-link" href="https://fund.eastmoney.com/${r.code}.html" target="_blank" rel="noopener noreferrer">${r.code}</a>`},
+            {key:'name',     label:'简称',     thStyle:'',             tdClass:'',           tdStyle:'font-weight:500', render:(r)=>`${r.name} <span class="badge badge-qdii">QDII</span>`},
+            {key:'ftype',    label:'类型',     thStyle:'',             tdClass:'',           tdStyle:'', render:(r)=>r.ftype||'-'},
+            {key:'market',   label:'市场',     thStyle:'',             tdClass:'',           tdStyle:'', render:(r)=>r.market==='场内'?'<span class="badge badge-exchange">场内</span>':'<span class="badge badge-otc">场外</span>'},
+            {key:'nav',      label:'最新净值', thStyle:'',             tdClass:'',           tdStyle:'font-family:var(--font-display)', render:(r)=>fmtNum(r.nav)},
+            {key:'daily_change', label:'日增长率', thStyle:'',             tdClass:'',           tdStyle:'font-family:var(--font-display);font-weight:600', render:(r)=>fmtPctClass(r.daily_change)},
+            {key:'ret_1y',   label:'近1年',    thStyle:'',             tdClass:'',           tdStyle:'font-family:var(--font-display);font-weight:600', render:(r)=>fmtPctClass(r.ret_1y)},
+            {key:'ret_2y',   label:'近2年',    thStyle:'',             tdClass:'',           tdStyle:'font-family:var(--font-display);font-weight:600', render:(r)=>fmtPctClass(r.ret_2y)},
+            {key:'ret_3y',   label:'近3年',    thStyle:'',             tdClass:'',           tdStyle:'font-family:var(--font-display);font-weight:600', render:(r)=>fmtPctClass(r.ret_3y)},
+            {key:'ret_4y',   label:'近4年',    thStyle:'',             tdClass:'',           tdStyle:'font-family:var(--font-display);font-weight:600', render:(r)=>fmtPctClass(r.ret_4y)},
+            {key:'ret_5y',   label:'近5年',    thStyle:'',             tdClass:'',           tdStyle:'font-family:var(--font-display);font-weight:600', render:(r)=>fmtPctClass(r.ret_5y)},
+            {key:'ret_10y',  label:'近10年',   thStyle:'',             tdClass:'',           tdStyle:'font-family:var(--font-display);font-weight:600', render:(r)=>fmtPctClass(r.ret_10y)},
+            {key:'ret_ann',  label:'年化',     thStyle:'',             tdClass:'',           tdStyle:'font-family:var(--font-display)', render:(r)=>fmtPct(r.ret_ann)},
+            {key:'total_ret',label:'总收益',   thStyle:'',             tdClass:'',           tdStyle:'font-family:var(--font-display);font-weight:600', render:(r)=>fmtPctClass(r.total_ret)},
+            {key:'mgmt_fee', label:'管理费',   thStyle:'',             tdClass:'',           tdStyle:'font-family:var(--font-display)', render:(r)=>fmtFee(r.mgmt_fee)},
+            {key:'cust_fee', label:'托管费',   thStyle:'',             tdClass:'',           tdStyle:'font-family:var(--font-display)', render:(r)=>fmtFee(r.cust_fee)},
+            {key:'est_date', label:'成立日',   thStyle:'',             tdClass:'',           tdStyle:'', render:(r)=>r.est_date||'-'},
+            {key:'upd_date', label:'更新',     thStyle:'',             tdClass:'',           tdStyle:'', render:(r)=>r.upd_date||'-'},
+            {key:'purchase_status', label:'申购', thStyle:'',          tdClass:'',           tdStyle:'', render:(r)=>fmtStatus(r.purchase_status)},
+            {key:'daily_limit', label:'日额度', thStyle:'',            tdClass:'',           tdStyle:'font-family:var(--font-display)', render:(r)=>fmtLimit(r.daily_limit)},
+        ],
+        sortOptions: [
+            {value:'code', label:'基金代码'},
+            {value:'name', label:'基金简称'},
+            {value:'nav', label:'最新净值'},
+            {value:'daily_change', label:'日增长率'},
+            {value:'ret_1y', label:'近1年涨跌'},
+            {value:'ret_2y', label:'近2年涨跌'},
+            {value:'ret_3y', label:'近3年涨跌'},
+            {value:'ret_4y', label:'近4年涨跌'},
+            {value:'ret_5y', label:'近5年涨跌'},
+            {value:'ret_10y', label:'近10年涨跌'},
+            {value:'ret_ann', label:'成立来年化'},
+            {value:'total_ret', label:'成立来总收益'},
+            {value:'purchase_status', label:'申购状态'},
+        ],
+        statsKeys: ['total', 'pos_1y', 'ret_ann_gt_20'],
+        statsLabels: ['全部', '成立以来每年正收益', '年化 > 20%'],
+        statsFilters: [null, 'pos_1y', 'ann_gt'],
+        csvHeaders: ['基金代码','基金简称','基金类型','类型','最新净值','日增长率','近1年涨跌幅','近2年涨跌幅','近3年涨跌幅','近4年涨跌幅','近5年涨跌幅','近10年涨跌幅','成立来年化收益','成立来总收益','管理费','托管费','成立日期','更新日期','申购状态','日累计额度'],
+        csvKeys: ['code','name','ftype','market','nav','daily_change','ret_1y','ret_2y','ret_3y','ret_4y','ret_5y','ret_10y','ret_ann','total_ret','mgmt_fee','cust_fee','est_date','upd_date','purchase_status','daily_limit'],
+    },
+};
+
+// ═══════════════════════════════════════════════════
+// State
+// ═══════════════════════════════════════════════════
+
+function loadWatchlist() {
+    try { return JSON.parse(localStorage.getItem('fund_watchlist') || '[]'); }
+    catch (e) { return []; }
+}
+
+function loadRatings() {
+    try { return JSON.parse(localStorage.getItem('fund_ratings') || '{}'); }
+    catch (e) { return {}; }
+}
+
+let state = {
+    tab: 'qdii',
+    total: 0,
+    page: 1,
+    perPage: 50,
+    sort: 'code',
+    order: 'asc',
+    search: '',
+    funds: [],
+    filter: null,
+    columnFilters: {},
+    fullData: null,
+    watchlist: loadWatchlist(),
+    watchlistFilter: false,
+    ratings: loadRatings(),
+    annThreshold: parseFloat(localStorage.getItem('ann_threshold') || '20'),
+    statDataset: null,
+};
+
+// ═══════════════════════════════════════════════════
+// Format Helpers
+// ═══════════════════════════════════════════════════
+
+function fmtNum(val) {
+    if (val == null) return '-';
+    const n = parseFloat(val);
+    if (!isFinite(n)) return '-';
+    return n.toFixed(4);
+}
+function fmtPct(val) {
+    if (val == null) return '-';
+    const n = parseFloat(val);
+    if (!isFinite(n)) return '-';
+    return n.toFixed(2) + '%';
+}
+function fmtPctClass(val) {
+    if (val == null) return '-';
+    const n = parseFloat(val);
+    if (!isFinite(n)) return '-';
+    const cls = n >= 0 ? 'up' : 'down';
+    return `<span class="${cls}">${n.toFixed(2)}%</span>`;
+}
+function fmtFee(val) {
+    if (val == null) return '-';
+    const n = parseFloat(val);
+    if (!isFinite(n)) return '-';
+    return n.toFixed(2) + '%';
+}
+function fmtAssets(val) {
+    if (val == null || isNaN(val)) return '-';
+    const n = parseFloat(val);
+    if (n >= 1000000000000) return (n / 1000000000000).toFixed(2) + 'T';
+    if (n >= 1000000000) return (n / 1000000000).toFixed(2) + 'B';
+    if (n >= 1000000) return (n / 1000000).toFixed(2) + 'M';
+    return n.toLocaleString('zh-CN');
+}
+function fmtStatus(val) {
+    if (val == null || val === '') return '-';
+    const badges = {'开放申购': 'badge-exchange', '限大额': 'badge-qdii', '暂停申购': 'badge-otc'};
+    const cls = badges[val] || '';
+    return cls ? `<span class="badge ${cls}">${val}</span>` : val;
+}
+function fmtLimit(val) {
+    if (val == null || isNaN(val)) return '-';
+    const n = parseFloat(val);
+    if (n >= 1000000000) return '不限';
+    if (n === 0) return '-';
+    return n.toLocaleString('zh-CN');
+}
+function showToast(msg, type) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast ' + type + ' show';
+    setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+function isPresetFilter(filter) {
+    return filter === 'nasdaq100' || filter === 'sp500';
+}
+
+function matchesPresetFilter(row, filter) {
+    const text = `${row.name || ''} ${row.ftype || ''}`.toLowerCase();
+    if (filter === 'nasdaq100') {
+        return /(纳斯达克|nasdaq)/i.test(text) && /100/.test(text);
+    }
+    if (filter === 'sp500') {
+        return /(标普\s*500|标普500|s&p\s*500|sp500|sp 500)/i.test(text);
+    }
+    return true;
+}
+
+// ═══════════════════════════════════════════════════
+// Tab Switching
+// ═══════════════════════════════════════════════════
+
+function switchTab(tab) {
+    if (state.tab === tab) return;
+    state.tab = tab;
+    state.page = 1;
+    state.sort = 'code';
+    state.order = 'asc';
+    state.search = '';
+    state.filter = null;
+    state.columnFilters = {};
+    state.fullData = null;
+    state.watchlistFilter = false;
+    state.statDataset = null;
+    document.getElementById('searchInput').value = '';
+
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('tab' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.add('active');
+
+    const cfg = TAB_CONFIG[tab];
+    const dataSourceEl = document.getElementById('dataSource');
+    if (dataSourceEl) dataSourceEl.textContent = cfg.dataSource;
+    document.getElementById('fetchStatus').textContent = cfg.footer;
+
+    // rebuild sort dropdown
+    const sel = document.getElementById('mobileSort');
+    sel.innerHTML = cfg.sortOptions.map(o => `<option value="${o.value}">${o.label}</option>`).join('');
+    sel.value = state.sort;
+    document.getElementById('mobileOrderBtn').textContent = '↑';
+
+    // labels
+    document.getElementById('statAllLbl').textContent = cfg.statsLabels[0];
+    const thirdItem = document.getElementById('statThird');
+    if (cfg.statsLabels[2]) {
+        document.getElementById('statPosLbl').textContent = cfg.statsLabels[1];
+        document.getElementById('statThirdLbl').textContent = '年化 > ' + state.annThreshold + '%';
+        thirdItem.onclick = function() { setFilter(cfg.statsFilters[2]); };
+        thirdItem.style.display = '';
+    } else {
+        thirdItem.style.display = 'none';
+    }
+
+    loadFunds();
+}
+
+// ═══════════════════════════════════════════════════
+// Data Loading
+// ═══════════════════════════════════════════════════
+
+async function loadFunds() {
+    const cfg = TAB_CONFIG[state.tab];
+    const hasColFilters = Object.keys(state.columnFilters).length > 0;
+    const needsAllData = hasColFilters || state.watchlistFilter || state.sort === '_rating' || isPresetFilter(state.filter);
+
+    const params = new URLSearchParams({
+        sort: state.sort === '_rating' ? 'code' : state.sort,
+        order: state.order,
+        per_page: needsAllData ? 99999 : state.perPage,
+    });
+    if (needsAllData) params.set('page', 1);
+    else params.set('page', state.page);
+    if (state.search) {
+        const terms = state.search.split(/\s+/).filter(t => t);
+        const include = terms.filter(t => !t.startsWith('-'));
+        const exclude = terms.filter(t => t.startsWith('-')).map(t => t.slice(1));
+        if (include.length) params.set('search', include.join(' '));
+        if (exclude.length) params.set('exclude', exclude.join(' '));
+    }
+    if (state.filter && !isPresetFilter(state.filter)) params.set('filter', state.filter);
+    if (state.filter === 'ann_gt') params.set('ann_threshold', state.annThreshold);
+    const statsParams = state.filter === 'ann_gt' ? '?ann_threshold=' + state.annThreshold : '';
+
+    try {
+        const statDatasetPromise = state.statDataset
+            ? Promise.resolve({ funds: state.statDataset })
+            : fetch(cfg.api + '?per_page=99999&sort=code&order=asc').then(r => r.json()).catch(() => null);
+
+        const [resp, statsResp, statDatasetData] = await Promise.all([
+            fetch(cfg.api + '?' + params.toString()),
+            fetch(cfg.statsApi + statsParams),
+            statDatasetPromise,
+        ]);
+        const data = await resp.json();
+        const stats = await statsResp.json();
+        if (statDatasetData && Array.isArray(statDatasetData.funds)) {
+            state.statDataset = statDatasetData.funds;
+        }
+
+        let displayFunds = data.funds;
+        state.total = data.total;
+
+        if (needsAllData) {
+            state.fullData = data.funds;
+            // Apply column filters
+            for (const [col, selectedValues] of Object.entries(state.columnFilters)) {
+                displayFunds = displayFunds.filter(r => {
+                    let v = r[col];
+                    if (v == null || v === '') v = '(空)';
+                    else v = String(v);
+                    return selectedValues.includes(v);
+                });
+            }
+            // Apply watchlist filter
+            if (state.watchlistFilter) {
+                displayFunds = displayFunds.filter(r => state.watchlist.includes(r.code));
+            }
+            if (isPresetFilter(state.filter)) {
+                displayFunds = displayFunds.filter(r => matchesPresetFilter(r, state.filter));
+            }
+            // Sort by rating client-side
+            if (state.sort === '_rating') {
+                displayFunds.sort((a, b) => {
+                    const ra = state.ratings[a.code] || 0;
+                    const rb = state.ratings[b.code] || 0;
+                    return state.order === 'asc' ? ra - rb : rb - ra;
+                });
+            }
+            state.total = displayFunds.length;
+            const start = (state.page - 1) * state.perPage;
+            displayFunds = displayFunds.slice(start, start + state.perPage);
+        } else {
+            state.fullData = null;
+        }
+
+        state.funds = displayFunds;
+        renderTable();
+        updateStats(stats);
+        updatePagination();
+    } catch (e) {
+        showToast('数据加载失败', 'error');
+    }
+}
+
+// ═══════════════════════════════════════════════════
+// Rendering
+// ═══════════════════════════════════════════════════
+
+function renderTable() {
+    const cfg = TAB_CONFIG[state.tab];
+    const thead = document.getElementById('thead');
+    const tbody = document.getElementById('tbody');
+
+    // Headers
+    thead.innerHTML = '<tr>' + cfg.columns.map(c => {
+        const hasFilter = state.columnFilters[c.key] != null;
+        return `<th onclick="sortTable('${c.key}')" id="th_${c.key}" style="${c.thStyle||''}" class="${hasFilter ? 'filter-active' : ''}">
+            <span class="th-label">${c.label}</span>
+            <span class="th-filter" onclick="event.stopPropagation();toggleFilterDropdown('${c.key}')">▾</span>
+        </th>`;
+    }).join('') + '</tr>';
+
+    // Body
+    tbody.innerHTML = '';
+    if (state.funds.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="${cfg.columns.length}" style="text-align:center;padding:30px;color:#5A6D8A;">无匹配基金</td></tr>`;
+        document.getElementById('cardList').innerHTML = '';
+        return;
+    }
+
+    state.funds.forEach(r => {
+        let row = '<tr>';
+        cfg.columns.forEach(c => {
+            row += `<td class="${c.tdClass||''}" style="${c.tdStyle||''}">${c.render(r)}</td>`;
+        });
+        row += '</tr>';
+        tbody.insertAdjacentHTML('beforeend', row);
+    });
+
+    // Mobile cards
+    renderCards(cfg);
+}
+
+function renderCards(cfg) {
+    const cardList = document.getElementById('cardList');
+    cardList.innerHTML = '';
+
+    state.funds.forEach(r => {
+        const isW = state.watchlist.includes(r.code);
+        let html = `<div class="fund-card">
+            <div class="card-header">
+                <div>
+                    <div><a class="code code-link" href="https://fund.eastmoney.com/${r.code}.html" target="_blank" rel="noopener noreferrer">${r.code}</a> <span class="name">${r.name}</span> <span class="star ${isW?'star-on':'star-off'}" onclick="toggleWatch('${r.code}')" style="cursor:pointer;font-size:1.1rem;margin-left:4px">${isW?'⊡':'☐'}</span></div>
+                    <div class="badges">`;
+
+        // Badge
+                    html += `<span class="badge badge-qdii">QDII</span> `;
+            html += r.market === '场内' ? '<span class="badge badge-exchange">场内</span>' : '<span class="badge badge-otc">场外</span>';
+        html += ` <span class="badge" style="background:rgba(136,153,180,0.1);color:var(--text-sub)">${r.ftype||'-'}</span>`;
+
+        html += `</div></div></div><div class="card-grid">`;
+
+        // Data fields
+        const skipKeys = ['_star', 'code', 'name', 'ftype'];
+        cfg.columns.forEach(c => {
+            if (skipKeys.includes(c.key)) return;
+            // card render: simplified version of the cell render
+            let val = c.render(r);
+            // For card, strip outer spans if they exist and re-wrap
+            html += `<div class="card-item"><span class="label">${c.label}</span><span class="value">${val}</span></div>`;
+        });
+
+        html += `</div></div>`;
+        cardList.insertAdjacentHTML('beforeend', html);
+    });
+}
+
+function updateStats(stats) {
+    const cfg = TAB_CONFIG[state.tab];
+    document.getElementById('cntTotal').textContent = stats ? stats[cfg.statsKeys[0]] : '-';
+    const totalCountEl = document.getElementById('totalCount');
+    if (totalCountEl) totalCountEl.textContent = stats ? stats[cfg.statsKeys[0]] : '-';
+    document.getElementById('cntPos').textContent = stats ? stats[cfg.statsKeys[1]] : '-';
+    document.getElementById('cntThird').textContent = stats ? stats[cfg.statsKeys[2]] : '-';
+    const statDataset = state.statDataset || [];
+    document.getElementById('cntNasdaq100').textContent = statDataset.length ? statDataset.filter(r => matchesPresetFilter(r, 'nasdaq100')).length : '-';
+    document.getElementById('cntSp500').textContent = statDataset.length ? statDataset.filter(r => matchesPresetFilter(r, 'sp500')).length : '-';
+
+    if (state.funds.length > 0 && state.funds[0].upd_date) {
+        const updateDateEl = document.getElementById('updateDate');
+        if (updateDateEl) updateDateEl.textContent = state.funds[0].upd_date;
+    }
+    document.getElementById('statAll').classList.toggle('active', state.filter === null);
+    document.getElementById('statPos1y').classList.toggle('active', state.filter === cfg.statsFilters[1]);
+    document.getElementById('statThird').classList.toggle('active', state.filter === cfg.statsFilters[2]);
+    document.getElementById('statNasdaq100').classList.toggle('active', state.filter === 'nasdaq100');
+    document.getElementById('statSp500').classList.toggle('active', state.filter === 'sp500');
+    updateWatchlistBtn();
+}
+
+// ═══════════════════════════════════════════════════
+// Interactions
+// ═══════════════════════════════════════════════════
+
+function setFilter(f) {
+    if (state.filter === f) {
+        state.filter = null;
+    } else {
+        if (f === 'ann_gt') {
+            const input = prompt('输入年化收益率阈值（%）：', state.annThreshold);
+            if (input === null) return;
+            const val = parseFloat(input);
+            if (isNaN(val) || val <= 0) return;
+            state.annThreshold = val;
+            localStorage.setItem('ann_threshold', String(val));
+            document.getElementById('statThirdLbl').textContent = '年化 > ' + val + '%';
+        }
+        state.filter = f;
+    }
+    state.page = 1;
+    loadFunds();
+}
+
+function updatePagination() {
+    const totalPages = Math.max(1, Math.ceil(state.total / state.perPage));
+    document.getElementById('pageInfo').textContent = `第 ${state.page}/${totalPages} 页（共 ${state.total} 条）`;
+    document.getElementById('prevBtn').disabled = state.page <= 1;
+    document.getElementById('nextBtn').disabled = state.page >= totalPages;
+}
+
+function onSearch() {
+    state.search = document.getElementById('searchInput').value.trim();
+    state.page = 1;
+    loadFunds();
+}
+
+function resetFilter() {
+    document.getElementById('searchInput').value = '';
+    state.search = '';
+    state.filter = null;
+    state.columnFilters = {};
+    state.fullData = null;
+    state.watchlistFilter = false;
+    state.page = 1;
+    closeFilterDropdown();
+    loadFunds();
+}
+
+function sortTable(field) {
+    if (field === '_star') return;
+    if (state.sort === field) {
+        state.order = state.order === 'asc' ? 'desc' : 'asc';
+    } else {
+        state.sort = field;
+        state.order = 'asc';
+    }
+    document.querySelectorAll('th .th-label').forEach(el => {
+        el.textContent = el.textContent.replace(' ▲','').replace(' ▼','');
+    });
+    const th = document.getElementById('th_' + field);
+    if (th) {
+        const label = th.querySelector('.th-label');
+        if (label) label.textContent += state.order === 'asc' ? ' ▲' : ' ▼';
+    }
+    loadFunds();
+}
+
+function goPage(delta) {
+    const totalPages = Math.max(1, Math.ceil(state.total / state.perPage));
+    const newPage = state.page + delta;
+    if (newPage < 1 || newPage > totalPages) return;
+    state.page = newPage;
+    loadFunds();
+}
+
+function onMobileSort() {
+    state.sort = document.getElementById('mobileSort').value;
+    state.order = 'asc';
+    state.page = 1;
+    document.getElementById('mobileOrderBtn').textContent = '↑';
+    loadFunds();
+}
+
+function onMobileOrder() {
+    state.order = state.order === 'asc' ? 'desc' : 'asc';
+    document.getElementById('mobileOrderBtn').textContent = state.order === 'asc' ? '↑' : '↓';
+    state.page = 1;
+    loadFunds();
+}
+
+async function exportCSV() {
+    const cfg = TAB_CONFIG[state.tab];
+    const hasColFilters = Object.keys(state.columnFilters).length > 0;
+    const params = new URLSearchParams({ sort: state.sort, order: state.order, per_page: 99999 });
+    if (state.search) {
+        const terms = state.search.split(/\s+/).filter(t => t);
+        const include = terms.filter(t => !t.startsWith('-'));
+        const exclude = terms.filter(t => t.startsWith('-')).map(t => t.slice(1));
+        if (include.length) params.set('search', include.join(' '));
+        if (exclude.length) params.set('exclude', exclude.join(' '));
+    }
+    if (state.filter && !isPresetFilter(state.filter)) params.set('filter', state.filter);
+    if (state.filter === 'ann_gt') params.set('ann_threshold', state.annThreshold);
+    const resp = await fetch(cfg.api + '?' + params.toString());
+    const data = await resp.json();
+
+    let exportFunds = data.funds;
+    if (hasColFilters) {
+        for (const [col, selectedValues] of Object.entries(state.columnFilters)) {
+            exportFunds = exportFunds.filter(r => {
+                let v = r[col];
+                if (v == null || v === '') v = '(空)';
+                else v = String(v);
+                return selectedValues.includes(v);
+            });
+        }
+    }
+    if (state.watchlistFilter) {
+        exportFunds = exportFunds.filter(r => state.watchlist.includes(r.code));
+    }
+    if (isPresetFilter(state.filter)) {
+        exportFunds = exportFunds.filter(r => matchesPresetFilter(r, state.filter));
+    }
+
+    if (exportFunds.length === 0) return;
+    let csv = cfg.csvHeaders.join(',') + '\n';
+    exportFunds.forEach(r => {
+        csv += cfg.csvKeys.map(k => {
+            let val = r[k];
+            if (val == null) return '';
+            return '"' + val + '"';
+        }).join(',') + '\n';
+    });
+    const blob = new Blob(['﻿' + csv], {type: 'text/csv;charset=utf-8;'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'QDII_' + new Date().toISOString().slice(0,10) + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+// ═══════════════════════════════════════════════════
+// Column Filter (Excel-like Dropdown)
+// ═══════════════════════════════════════════════════
+
+let pendingFilterSelections = {};
+
+function escapeHtml(str) {
+    if (str == null) return '';
+    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function toggleFilterDropdown(col) {
+    const dd = document.getElementById('filterDropdown');
+    const prevCol = dd.dataset.col;
+    if (dd.classList.contains('show') && prevCol === col) {
+        closeFilterDropdown();
+        return;
+    }
+
+    closeFilterDropdown();
+
+    const th = document.getElementById('th_' + col);
+    const rect = th.getBoundingClientRect();
+    dd.style.top = rect.bottom + 'px';
+    dd.style.left = Math.max(8, rect.left) + 'px';
+    dd.dataset.col = col;
+
+    const cfg = TAB_CONFIG[state.tab];
+    const colDef = cfg.columns.find(c => c.key === col);
+    document.getElementById('fdTitle').textContent = colDef ? colDef.label : col;
+
+    dd.classList.add('show');
+    document.getElementById('fdSearchWrap').style.display = 'none';
+    document.getElementById('fdBody').innerHTML = '<div class="fd-loading">加载中...</div>';
+
+    await ensureFullDataForFilter();
+
+    if (dd.dataset.col === col && dd.classList.contains('show')) {
+        buildFilterDropdown(col);
+    }
+}
+
+function closeFilterDropdown() {
+    document.getElementById('filterDropdown').classList.remove('show');
+    pendingFilterSelections = {};
+}
+
+async function ensureFullDataForFilter() {
+    if (state.fullData) return;
+    const cfg = TAB_CONFIG[state.tab];
+    try {
+        const resp = await fetch(cfg.api + '?per_page=99999&sort=' + state.sort + '&order=' + state.order);
+        const data = await resp.json();
+        state.fullData = data.funds;
+    } catch (e) {
+        // fallback: use current page data
+    }
+}
+
+function getColumnUniqueValues(col) {
+    const src = state.fullData || state.funds;
+    const vals = new Set();
+    src.forEach(r => {
+        let v = r[col];
+        if (v == null || v === '') v = '(空)';
+        else v = String(v);
+        vals.add(v);
+    });
+    return Array.from(vals).sort((a, b) => {
+        const na = parseFloat(a), nb = parseFloat(b);
+        if (!isNaN(na) && !isNaN(nb)) return na - nb;
+        return a.localeCompare(b, 'zh-CN');
+    });
+}
+
+function buildFilterDropdown(col) {
+    const values = getColumnUniqueValues(col);
+    const currentSelected = state.columnFilters[col];
+
+    pendingFilterSelections[col] = currentSelected ? [...currentSelected] : [...values];
+
+    const body = document.getElementById('fdBody');
+    const searchWrap = document.getElementById('fdSearchWrap');
+
+    searchWrap.style.display = values.length > 10 ? '' : 'none';
+    document.getElementById('fdSearchInput').value = '';
+
+    const allSelected = pendingFilterSelections[col].length === values.length;
+    let html = '';
+    html += '<label class="fd-item" onclick="event.stopPropagation()">';
+    html += '<input type="checkbox" id="fdCheckAll" onchange="onFilterCheckAll(this,\'' + col + '\')" ' + (allSelected ? 'checked' : '') + '>';
+    html += '<strong>全选 (' + values.length + ')</strong></label>';
+
+    values.forEach(v => {
+        const checked = pendingFilterSelections[col].includes(v);
+        const safe = escapeHtml(v);
+        html += '<label class="fd-item fd-item-val" data-value="' + safe + '" onclick="event.stopPropagation()">';
+        html += '<input type="checkbox" class="fd-cb" onchange="onFilterCheck(this,\'' + col + '\')" ' + (checked ? 'checked' : '') + '>';
+        html += '<span>' + safe + '</span></label>';
+    });
+
+    body.innerHTML = html;
+}
+
+function onFilterCheck(cb, col) {
+    const label = cb.closest('.fd-item');
+    if (!label) return;
+    const val = label.dataset.value;
+    const idx = pendingFilterSelections[col].indexOf(val);
+    if (cb.checked && idx === -1) pendingFilterSelections[col].push(val);
+    if (!cb.checked && idx > -1) pendingFilterSelections[col].splice(idx, 1);
+
+    const totalItems = document.querySelectorAll('#fdBody .fd-item-val').length;
+    const checkedItems = document.querySelectorAll('#fdBody .fd-item-val input:checked').length;
+    const allCb = document.getElementById('fdCheckAll');
+    if (allCb) allCb.checked = checkedItems === totalItems;
+}
+
+function onFilterCheckAll(cb, col) {
+    const allCbs = document.querySelectorAll('#fdBody .fd-item-val input.fd-cb');
+    allCbs.forEach(c => { c.checked = cb.checked; });
+    if (cb.checked) {
+        const values = getColumnUniqueValues(col);
+        pendingFilterSelections[col] = [...values];
+    } else {
+        pendingFilterSelections[col] = [];
+    }
+}
+
+function onFilterSearch() {
+    const q = document.getElementById('fdSearchInput').value.toLowerCase();
+    document.querySelectorAll('#fdBody .fd-item-val').forEach(el => {
+        const text = el.querySelector('span').textContent.toLowerCase();
+        el.style.display = text.includes(q) ? '' : 'none';
+    });
+}
+
+function applyFilterDropdown() {
+    const dd = document.getElementById('filterDropdown');
+    const col = dd.dataset.col;
+    if (!col) return;
+    const selections = pendingFilterSelections[col] || [];
+    const allValues = getColumnUniqueValues(col);
+
+    if (selections.length === allValues.length || selections.length === 0) {
+        delete state.columnFilters[col];
+    } else {
+        state.columnFilters[col] = selections;
+    }
+
+    closeFilterDropdown();
+    state.page = 1;
+    loadFunds();
+}
+
+function clearActiveColumnFilter(e) {
+    if (e) e.stopPropagation();
+    const col = document.getElementById('filterDropdown').dataset.col;
+    if (col) {
+        delete state.columnFilters[col];
+        closeFilterDropdown();
+        state.page = 1;
+        loadFunds();
+    }
+}
+
+// ═══════════════════════════════════════════════════
+// Watchlist
+// ═══════════════════════════════════════════════════
+
+function saveWatchlist() {
+    localStorage.setItem('fund_watchlist', JSON.stringify(state.watchlist));
+}
+
+function saveRatings() {
+    localStorage.setItem('fund_ratings', JSON.stringify(state.ratings));
+}
+
+function setRating(code, level) {
+    const current = state.ratings[code] || 0;
+    if (current === level) {
+        delete state.ratings[code];
+    } else {
+        state.ratings[code] = level;
+    }
+    saveRatings();
+    renderTable();
+}
+
+function toggleWatch(code) {
+    const idx = state.watchlist.indexOf(code);
+    if (idx > -1) state.watchlist.splice(idx, 1);
+    else state.watchlist.push(code);
+    saveWatchlist();
+    if (state.watchlistFilter) {
+        loadFunds();
+    } else {
+        renderTable();
+        updateWatchlistBtn();
+    }
+}
+
+// ═══════════════════════════════════════════════════
+// Export / Import 自选 & 评级
+// ═══════════════════════════════════════════════════
+
+function exportLocalData() {
+    const data = {
+        watchlist: state.watchlist,
+        ratings: state.ratings,
+        exportedAt: new Date().toISOString(),
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'qdii_backup.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast('自选数据已导出', 'success');
+}
+
+function importLocalData(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        try {
+            const data = JSON.parse(e.target.result);
+            if (data.watchlist && Array.isArray(data.watchlist)) {
+                state.watchlist = data.watchlist;
+                saveWatchlist();
+            }
+            if (data.ratings && typeof data.ratings === 'object') {
+                state.ratings = data.ratings;
+                saveRatings();
+            }
+            updateWatchlistBtn();
+            renderTable();
+            showToast('自选数据已导入共 ' + state.watchlist.length + ' 只', 'success');
+        } catch (err) {
+            showToast('导入失败：文件格式错误', 'error');
+        }
+    };
+    reader.readAsText(file);
+    event.target.value = '';
+}
+
+function toggleWatchlistFilter() {
+    state.watchlistFilter = !state.watchlistFilter;
+    state.page = 1;
+    loadFunds();
+}
+
+function updateWatchlistBtn() {
+    const btn = document.getElementById('watchlistBtn');
+    if (!btn) return;
+    btn.textContent = (state.watchlistFilter ? '⊡' : '☐') + ' 自选 (' + state.watchlist.length + ')';
+    btn.classList.toggle('active', state.watchlistFilter);
+}
+
+// ═══════════════════════════════════════════════════
+// Init
+// ═══════════════════════════════════════════════════
+
+(async function init() {
+    // Start with QDII tab
+    const cfg = TAB_CONFIG.qdii;
+    document.getElementById('fetchStatus').textContent = cfg.footer;
+    const dataSourceEl = document.getElementById('dataSource');
+    if (dataSourceEl) dataSourceEl.textContent = cfg.dataSource;
+    document.getElementById('statAllLbl').textContent = cfg.statsLabels[0];
+    document.getElementById('statPosLbl').textContent = cfg.statsLabels[1];
+    document.getElementById('statThirdLbl').textContent = '年化 > ' + state.annThreshold + '%';
+    document.getElementById('statThird').onclick = function() { setFilter(cfg.statsFilters[2]); };
+    const sel = document.getElementById('mobileSort');
+    sel.innerHTML = cfg.sortOptions.map(o => `<option value="${o.value}">${o.label}</option>`).join('');
+    sel.value = state.sort;
+
+    document.addEventListener('click', function(e) {
+        const dd = document.getElementById('filterDropdown');
+        if (!dd.classList.contains('show')) return;
+        if (!dd.contains(e.target) && !e.target.closest('.th-filter')) {
+            closeFilterDropdown();
+        }
+    });
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') closeFilterDropdown();
+    });
+
+    await loadFunds();
+})();
+
+// ── Quota Change Monitor ───────────────────────────────────────
+async function checkQuotaChanges() {
+    try {
+        const resp = await fetch('/qdii/api/quota/changes');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data.length === 0) {
+            document.getElementById('quotaNotice').style.display = 'none';
+            return;
+        }
+        const maxLines = 3;
+        const lines = data.slice(0, maxLines).map(c => {
+            const label = c.field === 'daily_limit' ? '日申购限额' : '申购状态';
+            const name = escapeHtml(c.name || c.code);
+            const oldVal = escapeHtml(c.old_value || '-');
+            const newVal = escapeHtml(c.new_value || '-');
+            return `基金 ${escapeHtml(c.code)}（${name}）${label}：${oldVal} → ${newVal}`;
+        });
+        if (data.length > maxLines) {
+            lines.push(`等 ${data.length} 条额度变动`);
+        }
+        document.getElementById('quotaNoticeContent').innerHTML = lines.join('<br>');
+        document.getElementById('quotaNotice').style.display = 'flex';
+    } catch(e) {/* ignore */}
+}
+
+function dismissQuotaNotice() {
+    document.getElementById('quotaNotice').style.display = 'none';
+    fetch('/qdii/api/quota/ack', { method: 'POST' }).catch(() => {});
+}
+
+// Check on init and every 15 minutes
+checkQuotaChanges();
+setInterval(checkQuotaChanges, 15 * 60 * 1000);
+</script>
+</body>
+</html>

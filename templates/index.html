@@ -313,6 +313,35 @@
     }
     .quota-notice-close:hover { color: var(--text); }
 
+    /* ── Quota Panel (Tab Content) ── */
+    .quota-panel { display: none; flex-direction: column; gap: 12px; }
+    .quota-panel.active { display: flex; }
+    .quota-panel-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .quota-panel-toolbar input[type="date"] {
+        padding: 6px 10px; border: 1px solid var(--surface-border); border-radius: var(--radius-sm);
+        background: var(--surface); color: var(--text); font-size: 0.85rem; font-family: var(--font-body);
+    }
+    .quota-panel-count { color: var(--text-muted); font-size: 0.82rem; font-family: var(--font-display); }
+    .quota-panel-actions { margin-left: auto; }
+    .quota-card {
+        background: var(--surface); border: 1px solid var(--surface-border);
+        border-radius: var(--radius); padding: 12px 14px;
+        transition: border-color 0.2s;
+    }
+    .quota-card:hover { border-color: rgba(245,158,11,0.2); }
+    .quota-card.unread { border-left: 3px solid var(--accent); }
+    .quota-card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .quota-card-header .code { font-family: var(--font-display); font-weight: 700; color: var(--accent); font-size: 0.85rem; }
+    .quota-card-header .name { font-weight: 500; font-size: 0.85rem; color: var(--text); }
+    .quota-card-header .time { color: var(--text-muted); font-size: 0.72rem; font-family: var(--font-display); margin-left: auto; }
+    .quota-card-header .mark-btn { cursor: pointer; font-size: 1rem; padding: 2px 4px; margin-left: 4px; }
+    .quota-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 4px 12px; }
+    .quota-card-item { display: flex; flex-direction: column; gap: 2px; }
+    .quota-card-item .ql { color: var(--text-muted); font-size: 0.68rem; }
+    .quota-card-item .qv { font-family: var(--font-display); font-size: 0.82rem; font-weight: 500; }
+    .quota-card-item .qv.old { color: var(--text-sub); }
+    .quota-card-item .qv.new { color: var(--accent); font-weight: 700; }
+
     /* ── Scrollbar ── */
     .table-wrap::-webkit-scrollbar { height: 6px; }
     .table-wrap::-webkit-scrollbar-track { background: transparent; }
@@ -424,33 +453,16 @@
         <span class="quota-notice-content" id="quotaNoticeContent"></span>
         <button class="quota-notice-close" onclick="dismissQuotaNotice()">&times;</button>
     </div>
-
-    <!-- 额度变动 Tab 专用内容 -->
-    <div id="quotaContent" style="display:none;">
-        <div class="stat" id="quotaBar">
-            <div class="stat-item" id="quotaStatAll" onclick="setQuotaFilter(null)"><div class="num" id="quotaCntAll">-</div><div class="lbl">全部</div></div>
-            <div class="stat-item" id="quotaStatStatus" onclick="setQuotaFilter('purchase_status')"><div class="num" id="quotaCntStatus">-</div><div class="lbl">申购状态</div></div>
-            <div class="stat-item" id="quotaStatLimit" onclick="setQuotaFilter('daily_limit')"><div class="num" id="quotaCntLimit">-</div><div class="lbl">日额度</div></div>
-            <div class="stat-item" id="quotaStatSuspend" onclick="setQuotaFilter('暂停申购')"><div class="num" id="quotaCntSuspend">-</div><div class="lbl">暂停申购</div></div>
-            <div class="stat-item" id="quotaStatResume" onclick="setQuotaFilter('恢复申购')"><div class="num" id="quotaCntResume">-</div><div class="lbl">恢复申购</div></div>
+    <div class="quota-panel" id="quotaPanel">
+        <div class="quota-panel-toolbar">
+            <input type="date" id="quotaDate">
+            <span class="quota-panel-count" id="quotaCount"></span>
+            <div class="quota-panel-actions">
+                <button class="btn btn-outline" onclick="markAllQuotaRead()">全部已读</button>
+            </div>
         </div>
-        <div id="quotaCountBar" style="font-size:0.78rem;color:var(--text-muted);margin-bottom:8px;"></div>
-        <div class="table-wrap">
-            <table>
-                <thead><tr>
-                    <th style="width:80px">时间</th>
-                    <th style="width:70px">代码</th>
-                    <th>名称</th>
-                    <th style="width:80px">字段</th>
-                    <th style="width:90px">原值</th>
-                    <th style="width:90px">新值</th>
-                    <th style="width:60px;text-align:center">已读</th>
-                </tr></thead>
-                <tbody id="quotaTbody"></tbody>
-            </table>
-        </div>
+        <div id="quotaCardList"></div>
     </div>
-
     <div class="table-wrap">
         <table>
             <thead id="thead"></thead>
@@ -553,11 +565,21 @@ const TAB_CONFIG = {
         api: '/qdii/api/quota/history',
         footer: '交易日 9:00-19:00 每小时检测',
         isDataTab: false,
-        quotaStats: {
-            keys: ['all','purchase_status','daily_limit','暂停申购','恢复申购'],
-            labels: ['全部','申购状态','日额度','暂停申购','恢复申购'],
-            filters: [null,'purchase_status','daily_limit','暂停申购','恢复申购'],
-        },
+        columns: [
+            {key:'detected_at', label:'时间', thStyle:'', tdClass:'', tdStyle:'font-family:var(--font-display);font-size:0.78rem', render:(r)=>{const d=new Date(r.detected_at);return d.toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});}},
+            {key:'code', label:'代码', thStyle:'', tdClass:'', tdStyle:'font-family:var(--font-display);font-weight:600;color:var(--accent)', render:(r)=>r.code},
+            {key:'name', label:'名称', thStyle:'', tdClass:'', tdStyle:'font-weight:500', render:(r)=>r.name||r.code},
+            {key:'field', label:'字段', thStyle:'', tdClass:'', tdStyle:'', render:(r)=>r.field==='daily_limit'?'日申购限额':'申购状态'},
+            {key:'old_value', label:'原值', thStyle:'', tdClass:'', tdStyle:'font-family:var(--font-display)', render:(r)=>r.old_value||'-'},
+            {key:'new_value', label:'新值', thStyle:'', tdClass:'', tdStyle:'font-family:var(--font-display);font-weight:600', render:(r)=>r.new_value||'-'},
+            {key:'is_read', label:'已读', thStyle:'width:60px;text-align:center', tdClass:'', tdStyle:'text-align:center', render:(r)=>r.is_read?'<span style="color:var(--text-muted)">✓</span>':'<span style="color:var(--accent)">○</span>'},
+        ],
+        sortOptions: [],
+        statsKeys: [],
+        statsLabels: [],
+        statsFilters: [],
+        csvHeaders: [],
+        csvKeys: [],
     },
 };
 
@@ -592,7 +614,6 @@ let state = {
     ratings: loadRatings(),
     annThreshold: parseFloat(localStorage.getItem('ann_threshold') || '20'),
     statDataset: null,
-    quotaState: { data: [], date: null, filter: null },
 };
 
 // ═══════════════════════════════════════════════════
@@ -700,8 +721,7 @@ function switchTab(tab) {
     document.querySelector('.table-wrap').style.display = isQdii ? '' : 'none';
     document.getElementById('cardList').style.display = isQdii ? '' : 'none';
     document.getElementById('pagination').style.display = isQdii ? '' : 'none';
-    document.getElementById('quotaContent').style.display = isQdii ? 'none' : '';
-
+    document.getElementById('quotaPanel').className = 'quota-panel' + (tab === 'quota' ? ' active' : '');
     if (isQdii) {
         const sel = document.getElementById('mobileSort');
         sel.innerHTML = cfg.sortOptions.map(o => `<option value="${o.value}">${o.label}</option>`).join('');
@@ -720,13 +740,9 @@ function switchTab(tab) {
         loadFunds();
     } else {
         // 额度变动 Tab
-        document.getElementById('quotaContent').style.display = '';
-        state.quotaState.filter = null;
-        state.quotaState.date = dateToString(new Date());
+        document.getElementById('quotaDate').value = dateToString(new Date());
         loadQuotaHistory();
     }
-
-    loadFunds();
 }
 
 // ═══════════════════════════════════════════════════
@@ -1378,94 +1394,63 @@ async function loadQuotaBadge() {
 }
 
 async function loadQuotaHistory() {
-    const dateVal = state.quotaState.date;
-    if (!dateVal) return;
+    const dateVal = document.getElementById('quotaDate').value;
     try {
         const resp = await fetch(`/qdii/api/quota/history?date=${dateVal}`);
         if (!resp.ok) return;
         const data = await resp.json();
-        state.quotaState.data = data;
-
-        // 聚合统计
-        const all = data.length;
-        const statusCount = data.filter(r => r.field === 'purchase_status').length;
-        const limitCount = data.filter(r => r.field === 'daily_limit').length;
-        const suspendCount = data.filter(r => r.new_value === '暂停申购').length;
-        const resumeCount = data.filter(r => r.new_value === '恢复申购').length;
+        const cardList = document.getElementById('quotaCardList');
+        if (data.length === 0) {
+            cardList.innerHTML = `<div style="text-align:center;padding:30px;color:#5A6D8A;font-size:0.9rem;">当日无额度变动记录</div>`;
+            document.getElementById('quotaCount').textContent = '';
+            return;
+        }
         const unread = data.filter(r => !r.is_read).length;
-
-        document.getElementById('quotaCntAll').textContent = all;
-        document.getElementById('quotaCntStatus').textContent = statusCount;
-        document.getElementById('quotaCntLimit').textContent = limitCount;
-        document.getElementById('quotaCntSuspend').textContent = suspendCount;
-        document.getElementById('quotaCntResume').textContent = resumeCount;
-        document.getElementById('quotaCountBar').textContent = unread > 0 ? `未读 ${unread} 条` : '';
-
-        renderQuotaDetail(data);
-        updateQuotaStatActive();
+        document.getElementById('quotaCount').textContent = `共 ${data.length} 条，未读 ${unread} 条`;
+        const labelMap = { daily_limit: '日申购限额', purchase_status: '申购状态' };
+        cardList.innerHTML = data.map(c => {
+            const label = labelMap[c.field] || c.field;
+            const time = new Date(c.detected_at).toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+            const unreadCls = c.is_read ? '' : 'unread';
+            const markIcon = c.is_read ? '✓' : '○';
+            const markColor = c.is_read ? 'var(--text-muted)' : 'var(--accent)';
+            return `<div class="quota-card ${unreadCls}" data-id="${c.id}">
+                <div class="quota-card-header">
+                    <span class="code">${c.code}</span>
+                    <span class="name">${escapeHtml(c.name || c.code)}</span>
+                    <span class="time">${time}</span>
+                    <span class="mark-btn" onclick="markQuotaRead(${c.id})" style="color:${markColor}">${markIcon}</span>
+                </div>
+                <div class="quota-card-grid">
+                    <div class="quota-card-item"><span class="ql">变动字段</span><span class="qv">${label}</span></div>
+                    <div class="quota-card-item"><span class="ql">原值</span><span class="qv old">${escapeHtml(c.old_value || '-')}</span></div>
+                    <div class="quota-card-item"><span class="ql">新值</span><span class="qv new">${escapeHtml(c.new_value || '-')}</span></div>
+                </div>
+            </div>`;
+        }).join('');
     } catch (e) {
-        document.getElementById('quotaTbody').innerHTML = '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--red)">加载失败</td></tr>';
+        document.getElementById('quotaCardList').innerHTML = '<div style="text-align:center;padding:20px;color:var(--red)">加载失败</div>';
     }
 }
 
-function renderQuotaDetail(data) {
-    const filter = state.quotaState.filter;
-    const filtered = filter
-        ? data.filter(r => r.field === filter || r.new_value === filter)
-        : data;
-
-    const tbody = document.getElementById('quotaTbody');
-    if (filtered.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:30px;color:#5A6D8A;">当日无额度变动记录</td></tr>`;
-        return;
-    }
-    tbody.innerHTML = filtered.map(c => {
-        const label = c.field === 'daily_limit' ? '日申购限额' : '申购状态';
-        const rowCls = c.is_read ? 'opacity:0.5' : '';
-        return `<tr style="${rowCls}" data-id="${c.id}">
-            <td style="font-family:var(--font-display);font-size:0.78rem">${new Date(c.detected_at).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}</td>
-            <td style="font-family:var(--font-display);font-weight:600;color:var(--accent)"><a href="https://fund.eastmoney.com/${c.code}.html" target="_blank" rel="noopener">${c.code}</a></td>
-            <td>${escapeHtml(c.name || c.code)}</td>
-            <td>${label}</td>
-            <td style="font-family:var(--font-display)">${escapeHtml(c.old_value || '-')}</td>
-            <td style="font-family:var(--font-display);font-weight:600">${escapeHtml(c.new_value || '-')}</td>
-            <td style="text-align:center;cursor:pointer" onclick="markQuotaRead(${c.id},this)">${c.is_read ? '<span style="color:var(--text-muted)">✓</span>' : '<span style="color:var(--accent)">○</span>'}</td>
-        </tr>`;
-    }).join('');
-}
-
-function setQuotaFilter(f) {
-    if (state.quotaState.filter === f) {
-        state.quotaState.filter = null;
-    } else {
-        state.quotaState.filter = f;
-    }
-    const data = state.quotaState.data;
-    renderQuotaDetail(data);
-    updateQuotaStatActive();
-}
-
-function updateQuotaStatActive() {
-    const f = state.quotaState.filter;
-    document.getElementById('quotaStatAll').classList.toggle('active', f === null);
-    document.getElementById('quotaStatStatus').classList.toggle('active', f === 'purchase_status');
-    document.getElementById('quotaStatLimit').classList.toggle('active', f === 'daily_limit');
-    document.getElementById('quotaStatSuspend').classList.toggle('active', f === '暂停申购');
-    document.getElementById('quotaStatResume').classList.toggle('active', f === '恢复申购');
-}
-
-function markQuotaRead(id, el) {
+function markQuotaRead(id) {
     fetch('/qdii/api/quota/ack-single', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({id})
     }).then(() => {
-        const row = el.closest('tr');
-        row.style.opacity = '0.5';
-        el.innerHTML = '<span style="color:var(--text-muted)">✓</span>';
+        const card = document.querySelector(`.quota-card[data-id="${id}"]`);
+        if (card) {
+            card.classList.remove('unread');
+            const btn = card.querySelector('.mark-btn');
+            if (btn) { btn.textContent = '✓'; btn.style.color = 'var(--text-muted)'; }
+        }
         loadQuotaBadge();
-        const unread = state.quotaState.data.filter(r => !r.is_read).length;
-        document.getElementById('quotaCountBar').textContent = unread > 0 ? `未读 ${unread} 条` : '';
+        const countEl = document.getElementById('quotaCount');
+        if (countEl) {
+            const m = countEl.textContent.match(/未读 (\d+)/);
+            if (m) countEl.textContent = countEl.textContent.replace(`未读 ${m[1]}`, `未读 ${parseInt(m[1]) - 1}`);
+        }
     });
 }
 

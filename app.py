@@ -120,6 +120,22 @@ def init_db():
     except Exception:
         pass
 
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS quota_changes (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code        TEXT NOT NULL,
+                    field       TEXT NOT NULL,
+                    old_value   TEXT,
+                    new_value   TEXT,
+                    detected_at TEXT NOT NULL,
+                    is_read     INTEGER DEFAULT 0
+                )
+            """)
+    except Exception:
+        pass
+
 
 # ── 数据采集（后台线程） ─────────────────────────────────────────
 
@@ -397,10 +413,10 @@ def api_quota_changes():
 def api_quota_history():
     """返回额度变动历史记录，支持日期和已读状态筛选。"""
     db = get_db()
-    date = request.args.get('date', date.today().isoformat())
+    date_str = request.args.get('date', date.today().isoformat())
     is_read = request.args.get('is_read', '')
     where = "WHERE q.detected_at LIKE ?"
-    params = [f"{date}%"]
+    params = [f"{date_str}%"]
     if is_read == '0':
         where += " AND q.is_read = 0"
         params.append(0)

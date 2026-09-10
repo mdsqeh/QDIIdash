@@ -331,7 +331,8 @@
     .quota-card:hover { border-color: rgba(245,158,11,0.2); }
     .quota-card.unread { border-left: 3px solid var(--accent); }
     .quota-card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-    .quota-card-header .code { font-family: var(--font-display); font-weight: 700; color: var(--accent); font-size: 0.85rem; }
+    .quota-card-header .code { font-family: var(--font-display); font-weight: 700; color: var(--accent); font-size: 0.85rem; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+    .quota-card-header .code:hover { color: #d97706; }
     .quota-card-header .name { font-weight: 500; font-size: 0.85rem; color: var(--text); }
     .quota-card-header .time { color: var(--text-muted); font-size: 0.72rem; font-family: var(--font-display); margin-left: auto; }
     .quota-card-header .mark-btn { cursor: pointer; font-size: 1rem; padding: 2px 4px; margin-left: 4px; }
@@ -692,19 +693,25 @@ function matchesPresetFilter(row, filter) {
 // Tab Switching
 // ═══════════════════════════════════════════════════
 
-function switchTab(tab) {
+function switchTab(tab, skipReset) {
     if (state.tab === tab) return;
+    const savedSearch = skipReset ? state.search : null;
     state.tab = tab;
     state.page = 1;
     state.sort = 'code';
     state.order = 'asc';
-    state.search = '';
-    state.filter = null;
-    state.columnFilters = {};
-    state.fullData = null;
-    state.watchlistFilter = false;
-    state.statDataset = null;
-    document.getElementById('searchInput').value = '';
+    if (!skipReset) {
+        state.search = '';
+        state.filter = null;
+        state.columnFilters = {};
+        state.fullData = null;
+        state.watchlistFilter = false;
+        state.statDataset = null;
+        document.getElementById('searchInput').value = '';
+    } else if (savedSearch) {
+        state.search = savedSearch;
+        document.getElementById('searchInput').value = savedSearch;
+    }
 
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
     document.getElementById('tab' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.add('active');
@@ -1416,7 +1423,7 @@ async function loadQuotaHistory() {
             const markColor = c.is_read ? 'var(--text-muted)' : 'var(--accent)';
             return `<div class="quota-card ${unreadCls}" data-id="${c.id}">
                 <div class="quota-card-header">
-                    <span class="code">${c.code}</span>
+                    <span class="code" onclick="jumpToFund('${c.code}')">${c.code}</span>
                     <span class="name">${escapeHtml(c.name || c.code)}</span>
                     <span class="time">${time}</span>
                     <span class="mark-btn" onclick="markQuotaRead(${c.id})" style="color:${markColor}">${markIcon}</span>
@@ -1459,6 +1466,12 @@ function markAllQuotaRead() {
         loadQuotaHistory();
         loadQuotaBadge();
     });
+}
+
+function jumpToFund(code) {
+    state.search = code;
+    document.getElementById('searchInput').value = code;
+    switchTab('qdii', true);
 }
 async function checkQuotaChanges() {
     try {

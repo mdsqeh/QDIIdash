@@ -362,6 +362,7 @@ def _fetch_incremental(codes):
     nav_map = open_nav.set_index('code')['nav'].to_dict() if not open_nav.empty else {}
     exch_nav_map = open_nav.set_index('code')['nav_ex'].to_dict() if 'nav_ex' in open_nav.columns else {}
 
+    today_str = date.today().isoformat()
     results = []
     for code in codes:
         code_s = str(code)
@@ -392,6 +393,7 @@ def _fetch_incremental(codes):
             'premium_discount': premium_discount,
             'purchase_status': purchase_status,
             'daily_limit': daily_limit,
+            'upd_date': today_str,
         })
 
     print(f"  ✅ 增量采集完成，共 {len(results)} 条", flush=True)

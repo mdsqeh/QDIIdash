@@ -1,14 +1,15 @@
 """
-AKShare 数据采集引擎 — 从东方财富（天天基金）获取 QDII 基金数据。
-
 独立于 Web 框架，可在后台线程中调用 fetch_all() 获取全量数据。
 返回 list[dict]，可直接存入 SQLite 或序列化为 JSON。
 """
 from datetime import date
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from io import StringIO
+import time
 import requests
 import pandas as pd
 import akshare as ak
+from bs4 import BeautifulSoup
 
 
 def _find_col(df, suffix, qdii_codes=None):
@@ -23,6 +24,14 @@ def _find_col(df, suffix, qdii_codes=None):
         candidates,
         key=lambda c: df.loc[qdii_mask, c].notna().sum() + (df.loc[qdii_mask, c] != '').sum()
     )
+
+
+def _fetch_all_codes():
+    """获取当前所有 QDII 基金代码列表（用于增量检测新基金）。"""
+    all_funds_df = ak.fund_name_em()
+    qdii_df = all_funds_df[all_funds_df['基金类型'].astype(str).str.contains('QDII|海外股票', na=False)].copy()
+    qdii_df.rename(columns={'基金代码': 'code'}, inplace=True)
+    return [str(c) for c in qdii_df['code'].unique().tolist()]
 
 
 def _fetch_fund_extra(codes):
@@ -126,6 +135,13 @@ def _fetch_fund_extra(codes):
             else:
                 ret_ann = None
 
+            # 最新日增长率（取最后两期单位净值计算）
+            if len(merged) >= 2 and pd.notna(merged['unit_nav'].iloc[-2]) and merged['unit_nav'].iloc[-2] > 0:
+                dv = merged['unit_nav'].iloc[-1] / merged['unit_nav'].iloc[-2]
+                daily_change = round((dv - 1) * 100, 2)
+            else:
+                daily_change = None
+
             return code, {
                 'est_date': est_date,
                 'ret_1y': ret_1y,
@@ -136,14 +152,19 @@ def _fetch_fund_extra(codes):
                 'ret_10y': ret_10y,
                 'ret_ann': ret_ann,
                 'total_ret': total_ret,
+                'daily_change': daily_change,
             }
         except Exception:
             return code, None
 
     results = {}
-    for code in codes:
+    total = len(codes)
+    for i, code in enumerate(codes, 1):
+        if i % 10 == 1 or i == total:
+            print(f"  📊 净值历史 [{i}/{total}] 正在采集 {code}...", flush=True)
         code, data = get_one(code)
         results[code] = data
+    print(f"  ✅ 净值历史完成，共 {total} 只", flush=True)
     return results
 
 
@@ -167,13 +188,30 @@ def _parse_fee(val):
 def _fetch_fund_fees(codes):
     """并发获取基金运作费用（管理费、托管费、销售服务费）。
 
-    fund_fee_em 使用 requests+BeautifulSoup，无 V8 限制，可并发。
+    自建请求替代 akshare fund_fee_em：
+    - fund_fee_em 内部裸 requests.get 无 timeout/UA/重试，10 并发易触发
+      东财 fundf10 限流（连接被挂起不响应），最终 180s 总超时整体丢弃。
+    - 这里自带 UA/Referer/timeout/重试，降并发并限速；单只失败不影响其他，
+      部分成功照常返回，结束时打印成功/失败统计。
     """
-    def get_one(code):
-        try:
-            df = ak.fund_fee_em(symbol=code, indicator='运作费用')
+    req_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://fundf10.eastmoney.com/",
+    }
+
+    def parse_fee_page(html):
+        """从 fundf10 费率页解析"运作费用"表，返回 (mgmt, cust, sale)。"""
+        soup = BeautifulSoup(html, features="html.parser")
+        for h4 in soup.find_all(name="h4", class_="t"):
+            if h4.get_text(strip=True) != "运作费用":
+                continue
+            table = h4.find_next("table")
+            if table is None:
+                break
+            df = pd.read_html(StringIO(str(table)))[0]
             if df.empty:
-                return code, {}
+                break
             row = df.iloc[0]
             mgmt = cust = sale = None
             for i in range(0, len(row), 2):
@@ -185,16 +223,32 @@ def _fetch_fund_fees(codes):
                     cust = _parse_fee(val)
                 elif '销售服务费' in label:
                     sale = _parse_fee(val)
-            return code, {'mgmt_fee': mgmt, 'cust_fee': cust, 'sale_fee': sale}
-        except Exception:
-            return code, {}
+            return mgmt, cust, sale
+        return None, None, None
+
+    def get_one(code):
+        url = f"https://fundf10.eastmoney.com/jjfl_{code}.html"
+        for attempt in range(3):
+            try:
+                resp = requests.get(url, headers=req_headers, timeout=10)
+                resp.raise_for_status()
+                mgmt, cust, sale = parse_fee_page(resp.text)
+                return code, {'mgmt_fee': mgmt, 'cust_fee': cust, 'sale_fee': sale}
+            except Exception:
+                if attempt < 2:
+                    time.sleep(0.5 * (attempt + 1))
+        return code, {}
 
     results = {}
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    failures = 0
+    with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {executor.submit(get_one, code): code for code in codes}
         for future in as_completed(futures):
             code, data = future.result()
             results[code] = data
+            if not data:
+                failures += 1
+    print(f"  ✅ 费率完成：成功 {len(results) - failures} 只，失败 {failures} 只", flush=True)
     return results
 
 
@@ -235,6 +289,117 @@ def _fetch_cumulative_returns(codes):
     return results
 
 
+def _fetch_incremental(codes):
+    """增量采集：只更新单位净值、日增长率、折溢价率、申购状态、日额度。
+
+    调用 fetcher.py 的已有函数，返回 list[dict]，每项只含 5 个可更新字段 + code。
+    """
+    codes_str = list(map(str, codes))
+    codes_set = set(codes_str)
+
+    # 1. 场外基金最新净值（单位净值 + 累计净值）
+    print("  📡 增量：获取场外基金最新净值...", flush=True)
+    all_daily = ak.fund_open_fund_daily_em()
+    nav_col = _find_col(all_daily, '单位净值', codes_set)
+    acc_nav_col = _find_col(all_daily, '累计净值', codes_set)
+    if nav_col:
+        open_nav = all_daily[all_daily['基金代码'].astype(str).isin(codes_set)][
+            ['基金代码', nav_col, acc_nav_col]
+        ].copy()
+        open_nav.rename(columns={'基金代码': 'code', nav_col: 'nav', acc_nav_col: 'acc_nav'}, inplace=True)
+    else:
+        open_nav = pd.DataFrame(columns=['code', 'nav', 'acc_nav'])
+
+    # 2. 交易所基金净值（补齐场内基金的 nav）
+    print("  📡 增量：获取场内基金净值...", flush=True)
+    exchange_prices = {}
+    exchange_changes = {}
+    exch_codes = set()
+    try:
+        exch_df = ak.fund_exchange_rank_em()
+        exch_sub = exch_df[exch_df['基金代码'].astype(str).isin(codes_set)][
+            ['基金代码', '单位净值']
+        ].copy()
+        exch_sub.rename(columns={'基金代码': 'code', '单位净值': 'nav_ex'}, inplace=True)
+        exch_codes = set(exch_sub['code'].tolist())
+        open_nav = pd.concat([open_nav, exch_sub[['code', 'nav_ex']]], ignore_index=True)
+    except Exception:
+        pass
+
+    # 3. 场内实时行情（折溢价率 + 日增长率）
+    print("  📡 增量：获取场内实时行情...", flush=True)
+    try:
+        etf_df = ak.fund_etf_spot_em()
+        etf_df['代码'] = etf_df['代码'].astype(str)
+        for _, row in etf_df[etf_df['代码'].isin(codes_set)].iterrows():
+            code = str(row['代码'])
+            try:
+                exchange_prices[code] = float(row['最新价'])
+                exchange_changes[code] = float(row['涨跌幅'])
+            except (ValueError, TypeError):
+                pass
+    except Exception:
+        pass
+    try:
+        lof_df = ak.fund_lof_spot_em()
+        lof_df['代码'] = lof_df['代码'].astype(str)
+        for _, row in lof_df[lof_df['代码'].isin(codes_set)].iterrows():
+            code = str(row['代码'])
+            if code not in exchange_prices:  # ETF 优先
+                try:
+                    exchange_prices[code] = float(row['最新价'])
+                    exchange_changes[code] = float(row['涨跌幅'])
+                except (ValueError, TypeError):
+                    pass
+    except Exception:
+        pass
+
+    # 4. 申购状态 & 日额度
+    print("  📡 增量：获取申购状态...", flush=True)
+    purchase_data = _fetch_fund_purchase_status(codes)
+
+    # 5. 构建结果（所有 QDII 基金都出现在结果里，缺失字段为 None）
+    nav_map = open_nav.set_index('code')['nav'].to_dict() if not open_nav.empty else {}
+    exch_nav_map = open_nav.set_index('code')['nav_ex'].to_dict() if 'nav_ex' in open_nav.columns else {}
+
+    today_str = date.today().isoformat()
+    results = []
+    for code in codes:
+        code_s = str(code)
+        nav = nav_map.get(code_s)
+        if nav is None and code_s in exch_codes:
+            nav = exch_nav_map.get(code_s)
+        nav = pd.to_numeric(nav, errors='coerce') if nav is not None else None
+
+        daily_change = exchange_changes.get(code_s)
+        if daily_change is not None:
+            daily_change = round(float(daily_change), 2)
+
+        premium_discount = None
+        if code_s in exchange_prices and nav is not None and float(nav) > 0:
+            mp = exchange_prices[code_s]
+            premium_discount = round((mp / float(nav) - 1) * 100, 2)
+
+        purchase = purchase_data.get(code_s, {})
+        purchase_status = purchase.get('purchase_status')
+        daily_limit_raw = purchase.get('daily_limit')
+        # 保持与 fetch_all() 一致的 daily_limit 类型（None 或原始值）
+        daily_limit = daily_limit_raw if daily_limit_raw is not None else None
+
+        results.append({
+            'code': code_s,
+            'nav': float(nav) if nav is not None else None,
+            'daily_change': daily_change,
+            'premium_discount': premium_discount,
+            'purchase_status': purchase_status,
+            'daily_limit': daily_limit,
+            'upd_date': today_str,
+        })
+
+    print(f"  ✅ 增量采集完成，共 {len(results)} 条", flush=True)
+    return results
+
+
 def _fetch_fund_purchase_status(codes):
     """获取基金申购状态和日累计限定金额。
 
@@ -251,17 +416,74 @@ def _fetch_fund_purchase_status(codes):
         return {}
 
 
+def _fetch_exchange_prices(codes):
+    """获取场内基金（ETF/LOF）的实时交易价格和涨跌幅。
+
+    用 AKShare 实时行情接口获取最新成交价和涨跌幅。
+    ThreadPoolExecutor + timeout 防止网络请求挂死。
+    返回 (dict[str, float], dict[str, float]): code → market_price, code → change_pct
+    """
+    prices = {}
+    changes = {}
+    codes_str = set(str(c) for c in codes)  # 统一为字符串，避免类型不匹配
+
+    def _fetch(name, func):
+        try:
+            df = func()
+            df['代码'] = df['代码'].astype(str)
+            sub = df[df['代码'].isin(codes_str)]
+            result_prices = {}
+            result_changes = {}
+            for _, row in sub.iterrows():
+                try:
+                    price = float(row['最新价'])
+                    if price > 0:
+                        result_prices[str(row['代码'])] = price
+                except (ValueError, TypeError):
+                    pass
+                try:
+                    chg = float(row['涨跌幅'])
+                    result_changes[str(row['代码'])] = chg
+                except (ValueError, TypeError, KeyError):
+                    pass
+            return result_prices, result_changes
+        except Exception:
+            return {}, {}
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        etf_future = executor.submit(_fetch, 'ETF', ak.fund_etf_spot_em)
+        lof_future = executor.submit(_fetch, 'LOF', ak.fund_lof_spot_em)
+
+        for future, label in [(etf_future, 'ETF'), (lof_future, 'LOF')]:
+            try:
+                result_prices, result_changes = future.result(timeout=30)
+                prices.update(result_prices)
+                changes.update(result_changes)
+            except TimeoutError:
+                print(f"⏰ {label} 实时行情请求超时（30s），跳过")
+            except Exception:
+                pass
+
+    return prices, changes
+
+
+
+
 def fetch_all():
     """全量采集 QDII 基金数据，返回 list[dict]。
 
     返回字段: code, name, ftype, nav, acc_nav, ret_1y, ret_3y, ret_ann, est_date, upd_date
     """
+    print("📡 开始采集 QDII 基金数据...", flush=True)
+
     all_funds_df = ak.fund_name_em()
     qdii_df = all_funds_df[all_funds_df['基金类型'].astype(str).str.contains('QDII|海外股票', na=False)].copy()
     qdii_df.rename(columns={'基金代码': 'code', '基金简称': 'name', '基金类型': 'ftype'}, inplace=True)
     qdii_codes = qdii_df['code'].unique().tolist()
+    print(f"  ✅ 基金列表: 共 {len(qdii_codes)} 只 QDII 基金", flush=True)
 
     # 1. 开放式基金最新净值
+    print("  📡 获取场外基金最新净值...", flush=True)
     all_daily_df = ak.fund_open_fund_daily_em()
     nav_col = _find_col(all_daily_df, '单位净值', qdii_codes)
     acc_nav_col = _find_col(all_daily_df, '累计净值', qdii_codes)
@@ -271,6 +493,7 @@ def fetch_all():
     open_nav.rename(columns={'基金代码': 'code', nav_col: 'nav', acc_nav_col: 'acc_nav'}, inplace=True)
 
     # 2. 交易所基金数据（ETF/LOF）
+    print("  📡 获取场内基金排名...", flush=True)
     exch_sub = pd.DataFrame()
     try:
         exch_df = ak.fund_exchange_rank_em()
@@ -286,6 +509,7 @@ def fetch_all():
         pass
 
     # 3. 开放式基金排行榜（含涨跌幅）
+    print("  📡 获取场外基金排行榜...", flush=True)
     rank_sub = pd.DataFrame()
     try:
         rank_df = ak.fund_open_fund_rank_em()
@@ -300,6 +524,7 @@ def fetch_all():
 
     # 记录场内基金代码（ETF/LOF）
     exch_codes = set(exch_sub['code'].unique()) if not exch_sub.empty else set()
+    print(f"  ✅ 场内基金 {len(exch_codes)} 只", flush=True)
 
     # 合并
     final_df = pd.merge(qdii_df, open_nav, on='code', how='left')
@@ -314,9 +539,11 @@ def fetch_all():
             final_df[col] = final_df[col].replace('', pd.NA)
 
     # 净值历史补充（成立日期 + 涨跌幅计算）
+    print("  📡 获取净值历史（逐只，最慢环节）...", flush=True)
     extra_data = _fetch_fund_extra(qdii_codes)
 
-    # 费用数据获取（并发，无 V8 限制）
+    # 费用数据获取（自建请求：UA/Referer/timeout/重试，降并发防限流）
+    print("  📡 获取基金费率...", flush=True)
     fee_data = _fetch_fund_fees(qdii_codes)
 
     # 填充 est_date
@@ -327,11 +554,15 @@ def fetch_all():
         final_df['nav'] = final_df['nav'].fillna(final_df['nav_ex'])
         final_df['acc_nav'] = final_df['acc_nav'].fillna(final_df['acc_nav_ex'])
 
-    # ret_1y/ret_3y：rank（天天基金排行榜 NAV 回报）优先 → extra（累计净值计算）补缺
-    # 不使用 exchange 价格回报（ret_1y_ex/ret_3y_ex），因 LOF 折溢价会导致偏差
+    # ret_1y/ret_3y：交易所排名（净值回报）→ 场外排名 → extra_data 兜底
+    # 场内基金用交易所排名数据（基于净值计算，非交易价格）
     if not rank_sub.empty:
         final_df['ret_1y'] = pd.to_numeric(final_df['ret_1y_rank'], errors='coerce')
         final_df['ret_3y'] = pd.to_numeric(final_df['ret_3y_rank'], errors='coerce')
+    if not exch_sub.empty:
+        m = final_df['code'].isin(exch_codes)
+        final_df.loc[m, 'ret_1y'] = pd.to_numeric(final_df.loc[m, 'ret_1y_ex'], errors='coerce')
+        final_df.loc[m, 'ret_3y'] = pd.to_numeric(final_df.loc[m, 'ret_3y_ex'], errors='coerce')
     final_df['ret_1y'] = final_df['ret_1y'].fillna(
         final_df['code'].map(lambda c: extra_data[c]['ret_1y'] if extra_data.get(c) else None))
     final_df['ret_3y'] = final_df['ret_3y'].fillna(
@@ -342,7 +573,17 @@ def fetch_all():
 
     # total_ret：优先使用官方累计收益率 API（分红再投资的复权收益率），
     # 回退到 NAV 历史计算值
-    cum_ret_data = _fetch_cumulative_returns(qdii_codes)
+    print("  📡 获取官方累计收益率...", flush=True)
+    cum_ret_data = {}
+    pool = ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(_fetch_cumulative_returns, qdii_codes)
+    try:
+        cum_ret_data = future.result(timeout=180)
+    except Exception:
+        print("  ⏰ 累计收益率获取超时，跳过", flush=True)
+        future.cancel()
+    finally:
+        pool.shutdown(wait=False)
     final_df['total_ret'] = final_df['code'].map(lambda c: cum_ret_data.get(c))
     nav_total_ret = final_df['code'].map(lambda c: extra_data[c]['total_ret'] if extra_data.get(c) else None)
     final_df['total_ret'] = final_df['total_ret'].fillna(nav_total_ret)
@@ -352,11 +593,16 @@ def fetch_all():
         final_df[fee_key] = final_df['code'].map(lambda c: fee_data[c][fee_key] if fee_data.get(c) else None)
 
     # 申购状态和日累计限额
+    print("  📡 获取申购状态...", flush=True)
     purchase_data = _fetch_fund_purchase_status(qdii_codes)
     final_df['purchase_status'] = final_df['code'].map(
         lambda c: purchase_data[c]['purchase_status'] if purchase_data.get(c) else None)
     final_df['daily_limit'] = final_df['code'].map(
         lambda c: purchase_data[c]['daily_limit'] if purchase_data.get(c) else None)
+
+    # 日增长率：来自净值历史计算的最近一期涨跌
+    final_df['daily_change'] = final_df['code'].map(
+        lambda c: extra_data[c]['daily_change'] if extra_data.get(c) else None)
 
     # 清理辅助列
     drop_cols = [c for c in final_df.columns if c.endswith(('_ex', '_rank')) or c.startswith('src') or '拼音' in c]
@@ -364,6 +610,24 @@ def fetch_all():
 
     # 标记场内/场外
     final_df['market'] = final_df['code'].apply(lambda c: '场内' if c in exch_codes else '场外')
+
+    # 场内基金折溢价计算
+    print("  📡 获取场内实时行情...", flush=True)
+    exchange_prices, exchange_changes = _fetch_exchange_prices(exch_codes)
+    final_df['premium_discount'] = None
+    mask_ex = final_df['market'] == '场内'
+    final_df.loc[mask_ex, 'premium_discount'] = final_df.loc[mask_ex].apply(
+        lambda r: round((exchange_prices[r['code']] / float(r['nav']) - 1) * 100, 2)
+        if r['code'] in exchange_prices
+           and pd.notna(r['nav'])
+           and float(r['nav']) > 0
+        else None,
+        axis=1
+    )
+
+    # 场内基金用实时涨跌幅覆盖日增长率
+    if exchange_changes:
+        final_df.loc[mask_ex, 'daily_change'] = final_df.loc[mask_ex, 'code'].map(exchange_changes)
 
     # 补充缺失列
     final_df['upd_date'] = date.today().isoformat()
@@ -382,11 +646,12 @@ def fetch_all():
             except Exception:
                 pass
 
-    # 过滤净值无效的记录
-    final_df = final_df.dropna(subset=['nav', 'name'])
+    # 保留所有 QDII 基金，缺失字段留空
+
+    print("  🔄 数据处理中...", flush=True)
 
     # 确保涨跌幅为 float，None 保留
-    for col in ['ret_1y', 'ret_2y', 'ret_3y', 'ret_4y', 'ret_5y', 'ret_10y', 'ret_ann', 'total_ret']:
+    for col in ['ret_1y', 'ret_2y', 'ret_3y', 'ret_4y', 'ret_5y', 'ret_10y', 'ret_ann', 'total_ret', 'daily_change']:
         if col in final_df.columns:
             final_df[col] = pd.to_numeric(final_df[col], errors='coerce')
 
@@ -396,5 +661,8 @@ def fetch_all():
         for k, v in r.items():
             if isinstance(v, float) and v != v:
                 r[k] = None
+            elif v == '':
+                r[k] = None
 
+    print(f"✅ 采集完成，共 {len(records)} 条有效记录", flush=True)
     return records

@@ -1,9 +1,33 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
+<!--
+---
+title: QDII 基金数据看板
+description: 专业的 QDII 基金实时数据监控平台，提供折溢价率、日限额、申购状态及历史年化收益分析。
+keywords: QDII基金, 折溢价率, 基金监控, 日额度, 纳斯达克100, 标普500, 基金套利
+---
+-->
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>QDII 基金数据看板</title>
+<meta name="description" content="专业的 QDII 基金实时数据监控平台，提供折溢价率、日限额、申购状态及历史年化收益分析，助力投资者把握全球市场机会。">
+<meta name="keywords" content="QDII基金, 折溢价率, 基金监控, 日额度, 美股基金, 港股基金, 纳斯达克100, 标普500, 基金套利, 基金净值查询">
+<meta name="author" content="mdsqeh">
+<meta name="robots" content="index, follow">
+
+<!-- Open Graph / Facebook -->
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://github.com/mdsqeh/QDIIdash">
+<meta property="og:title" content="QDII 基金数据看板 - 实时监控与分析">
+<meta property="og:description" content="实时追踪 QDII 基金折溢价、申购限额及年化收益。">
+<meta property="og:image" content="https://coresg-normal.trae.ai/api/ide/v1/text_to_image?prompt=financial%20dashboard%20stock%20market%20data%20visualization%20dark%20theme&image_size=landscape_16_9">
+
+<!-- Twitter -->
+<meta property="twitter:card" content="summary_large_image">
+<meta property="twitter:title" content="QDII 基金数据看板">
+<meta property="twitter:description" content="实时追踪 QDII 基金折溢价、申购限额及年化收益。">
+
+<title>QDII 基金数据看板 - 实时监控与分析</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -131,6 +155,11 @@
         background: var(--surface); border: 1px solid var(--surface-border); color: var(--text-sub);
     }
     .btn-outline:hover { background: var(--surface-hover); border-color: var(--text-muted); color: var(--text); }
+    .btn-outline.active {
+        background: var(--accent-glow);
+        border-color: var(--accent);
+        color: var(--accent);
+    }
     .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none !important; }
     .fetch-status { color: var(--text-muted); font-size: 0.8rem; }
 
@@ -439,6 +468,7 @@
         <input type="text" id="searchInput" class="search" placeholder="搜索代码或名称..." oninput="onSearch()">
         <button class="btn btn-outline" onclick="resetFilter()">清除筛选</button>
         <button class="btn btn-outline" id="watchlistBtn" onclick="toggleWatchlistFilter()">☐ 自选 (0)</button>
+        <button class="btn btn-outline" id="positionBtn" onclick="togglePositionFilter()">💰 持仓 (0)</button>
         <button class="btn btn-primary" onclick="exportCSV()">导出 CSV</button>
         <button class="btn btn-outline" onclick="exportLocalData()">导出自选</button>
         <button class="btn btn-outline" onclick="document.getElementById('importInput').click()">导入自选</button>
@@ -516,6 +546,7 @@ const TAB_CONFIG = {
         footer: '每月1号全量，每日21:00增量',
         isDataTab: true,
         columns: [
+            {key:'_pos', label:'持仓', thStyle:'width:36px;text-align:center;cursor:default', tdStyle:'text-align:center;padding:4px', render:(r)=>{const p=state.positions.includes(r.code);return '<span class="star '+(p?'star-on':'star-off')+'" onclick="event.stopPropagation();togglePos(\''+r.code+'\')">'+(p?'💰':'○')+'</span>';}},
             {key:'_star', label:'自选', thStyle:'width:36px;text-align:center;cursor:default', tdStyle:'text-align:center;padding:4px', render:(r)=>{const w=state.watchlist.includes(r.code);return '<span class="star '+(w?'star-on':'star-off')+'" onclick="event.stopPropagation();toggleWatch(\''+r.code+'\')">'+(w?'⊡':'☐')+'</span>';}},
             {key:'_rating', label:'自评级', thStyle:'width:90px;text-align:center;cursor:default', tdStyle:'text-align:center;padding:4px;white-space:nowrap', render:(r)=>{const rt=state.ratings[r.code]||0;let h='';for(let i=1;i<=5;i++){h+='<span class="rstar '+(i<=rt?'rstar-on':'rstar-off')+'" onclick="event.stopPropagation();setRating(\''+r.code+'\','+i+')">'+(i<=rt?'★':'☆')+'</span>';}return h;}},
             {key:'code',     label:'代码',     thStyle:'',             tdClass:'',           tdStyle:'font-family:var(--font-display);font-weight:600;color:var(--accent)', render:(r)=>`<a class="code-link" href="https://fund.eastmoney.com/${r.code}.html" target="_blank" rel="noopener noreferrer">${r.code}</a>`},
@@ -555,6 +586,7 @@ const TAB_CONFIG = {
             {value:'ret_ann', label:'成立来年化'},
             {value:'total_ret', label:'成立来总收益'},
             {value:'purchase_status', label:'申购状态'},
+            {value:'daily_limit', label:'日额度'},
         ],
         statsKeys: ['total', 'pos_1y', 'ret_ann_gt_20'],
         statsLabels: ['全部', '成立以来每年正收益', '年化 > 20%'],
@@ -593,6 +625,11 @@ function loadWatchlist() {
     catch (e) { return []; }
 }
 
+function loadPositions() {
+    try { return JSON.parse(localStorage.getItem('fund_positions') || '[]'); }
+    catch (e) { return []; }
+}
+
 function loadRatings() {
     try { return JSON.parse(localStorage.getItem('fund_ratings') || '{}'); }
     catch (e) { return {}; }
@@ -603,8 +640,8 @@ let state = {
     total: 0,
     page: 1,
     perPage: 50,
-    sort: 'code',
-    order: 'asc',
+    sort: 'daily_limit',
+    order: 'desc',
     search: '',
     funds: [],
     filter: null,
@@ -612,6 +649,8 @@ let state = {
     fullData: null,
     watchlist: loadWatchlist(),
     watchlistFilter: false,
+    positions: loadPositions(),
+    positionFilter: false,
     ratings: loadRatings(),
     annThreshold: parseFloat(localStorage.getItem('ann_threshold') || '20'),
     statDataset: null,
@@ -698,8 +737,8 @@ function switchTab(tab, skipReset) {
     const savedSearch = skipReset ? state.search : null;
     state.tab = tab;
     state.page = 1;
-    state.sort = 'code';
-    state.order = 'asc';
+    state.sort = 'daily_limit';
+    state.order = 'desc';
     if (!skipReset) {
         state.search = '';
         state.filter = null;
@@ -759,7 +798,7 @@ function switchTab(tab, skipReset) {
 async function loadFunds() {
     const cfg = TAB_CONFIG[state.tab];
     const hasColFilters = Object.keys(state.columnFilters).length > 0;
-    const needsAllData = hasColFilters || state.watchlistFilter || state.sort === '_rating' || isPresetFilter(state.filter);
+    const needsAllData = hasColFilters || state.watchlistFilter || state.positionFilter || state.sort === '_rating' || isPresetFilter(state.filter);
 
     const params = new URLSearchParams({
         sort: state.sort === '_rating' ? 'code' : state.sort,
@@ -812,6 +851,10 @@ async function loadFunds() {
             // Apply watchlist filter
             if (state.watchlistFilter) {
                 displayFunds = displayFunds.filter(r => state.watchlist.includes(r.code));
+            }
+            // Apply position filter
+            if (state.positionFilter) {
+                displayFunds = displayFunds.filter(r => state.positions.includes(r.code));
             }
             if (isPresetFilter(state.filter)) {
                 displayFunds = displayFunds.filter(r => matchesPresetFilter(r, state.filter));
@@ -885,10 +928,11 @@ function renderCards(cfg) {
 
     state.funds.forEach(r => {
         const isW = state.watchlist.includes(r.code);
+        const isP = state.positions.includes(r.code);
         let html = `<div class="fund-card">
             <div class="card-header">
                 <div>
-                    <div><a class="code code-link" href="https://fund.eastmoney.com/${r.code}.html" target="_blank" rel="noopener noreferrer">${r.code}</a> <span class="name">${r.name}</span> <span class="star ${isW?'star-on':'star-off'}" onclick="toggleWatch('${r.code}')" style="cursor:pointer;font-size:1.1rem;margin-left:4px">${isW?'⊡':'☐'}</span></div>
+                    <div><a class="code code-link" href="https://fund.eastmoney.com/${r.code}.html" target="_blank" rel="noopener noreferrer">${r.code}</a> <span class="name">${r.name}</span> <span class="star ${isW?'star-on':'star-off'}" onclick="toggleWatch('${r.code}')" style="cursor:pointer;font-size:1.1rem;margin-left:4px">${isW?'⊡':'☐'}</span> <span class="star ${isP?'star-on':'star-off'}" onclick="togglePos('${r.code}')" style="cursor:pointer;font-size:1.1rem;margin-left:4px">${isP?'💰':'○'}</span></div>
                     <div class="badges">`;
 
         // Badge
@@ -1057,6 +1101,9 @@ async function exportCSV() {
     }
     if (state.watchlistFilter) {
         exportFunds = exportFunds.filter(r => state.watchlist.includes(r.code));
+    }
+    if (state.positionFilter) {
+        exportFunds = exportFunds.filter(r => state.positions.includes(r.code));
     }
     if (isPresetFilter(state.filter)) {
         exportFunds = exportFunds.filter(r => matchesPresetFilter(r, state.filter));
@@ -1256,6 +1303,10 @@ function saveWatchlist() {
     localStorage.setItem('fund_watchlist', JSON.stringify(state.watchlist));
 }
 
+function savePositions() {
+    localStorage.setItem('fund_positions', JSON.stringify(state.positions));
+}
+
 function saveRatings() {
     localStorage.setItem('fund_ratings', JSON.stringify(state.ratings));
 }
@@ -1284,47 +1335,65 @@ function toggleWatch(code) {
     }
 }
 
+function togglePos(code) {
+    const idx = state.positions.indexOf(code);
+    if (idx > -1) state.positions.splice(idx, 1);
+    else state.positions.push(code);
+    savePositions();
+    if (state.positionFilter) {
+        loadFunds();
+    } else {
+        renderTable();
+        updateWatchlistBtn();
+    }
+}
+
 // ═══════════════════════════════════════════════════
-// Export / Import 自选 & 评级
+// Export / Import 持仓 & 自选 & 评级
 // ═══════════════════════════════════════════════════
 
 function exportLocalData() {
     const data = {
         watchlist: state.watchlist,
+        positions: state.positions,
         ratings: state.ratings,
         exportedAt: new Date().toISOString(),
-    };
-    const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'qdii_backup.json';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    showToast('自选数据已导出', 'success');
+};
+const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+const url = URL.createObjectURL(blob);
+const a = document.createElement('a');
+a.href = url;
+a.download = 'qdii_backup.json';
+document.body.appendChild(a);
+a.click();
+document.body.removeChild(a);
+URL.revokeObjectURL(url);
+showToast('数据已导出', 'success');
 }
 
 function importLocalData(event) {
-    const file = event.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = function(e) {
-        try {
-            const data = JSON.parse(e.target.result);
-            if (data.watchlist && Array.isArray(data.watchlist)) {
-                state.watchlist = data.watchlist;
-                saveWatchlist();
-            }
-            if (data.ratings && typeof data.ratings === 'object') {
-                state.ratings = data.ratings;
-                saveRatings();
-            }
-            updateWatchlistBtn();
-            renderTable();
-            showToast('自选数据已导入共 ' + state.watchlist.length + ' 只', 'success');
-        } catch (err) {
+const file = event.target.files[0];
+if (!file) return;
+const reader = new FileReader();
+reader.onload = function(e) {
+    try {
+        const data = JSON.parse(e.target.result);
+        if (data.watchlist && Array.isArray(data.watchlist)) {
+            state.watchlist = data.watchlist;
+            saveWatchlist();
+        }
+        if (data.positions && Array.isArray(data.positions)) {
+            state.positions = data.positions;
+            savePositions();
+        }
+        if (data.ratings && typeof data.ratings === 'object') {
+            state.ratings = data.ratings;
+            saveRatings();
+        }
+        updateWatchlistBtn();
+        renderTable();
+        showToast('数据已导入', 'success');
+    } catch (err) {
             showToast('导入失败：文件格式错误', 'error');
         }
     };
@@ -1334,15 +1403,29 @@ function importLocalData(event) {
 
 function toggleWatchlistFilter() {
     state.watchlistFilter = !state.watchlistFilter;
+    if (state.watchlistFilter) state.positionFilter = false;
+    state.page = 1;
+    loadFunds();
+}
+
+function togglePositionFilter() {
+    state.positionFilter = !state.positionFilter;
+    if (state.positionFilter) state.watchlistFilter = false;
     state.page = 1;
     loadFunds();
 }
 
 function updateWatchlistBtn() {
-    const btn = document.getElementById('watchlistBtn');
-    if (!btn) return;
-    btn.textContent = (state.watchlistFilter ? '⊡' : '☐') + ' 自选 (' + state.watchlist.length + ')';
-    btn.classList.toggle('active', state.watchlistFilter);
+    const wBtn = document.getElementById('watchlistBtn');
+    if (wBtn) {
+        wBtn.textContent = (state.watchlistFilter ? '⊡' : '☐') + ' 自选 (' + state.watchlist.length + ')';
+        wBtn.classList.toggle('active', state.watchlistFilter);
+    }
+    const pBtn = document.getElementById('positionBtn');
+    if (pBtn) {
+        pBtn.textContent = '💰 持仓 (' + state.positions.length + ')';
+        pBtn.classList.toggle('active', state.positionFilter);
+    }
 }
 
 // ═══════════════════════════════════════════════════

@@ -13,7 +13,27 @@ Flask + SQLite 后端、纯前端展示的 QDII 基金数据看板，能自动�
 - 自选/自评级（localStorage 持久化，支持导出/导入备份）
 - 移动端自适应卡片布局
 - 定时自动采集 + 启动时立即采集
-- **日申购额度监控**：交易日 9:00-15:00 每 30 分钟检测 QDII 基金额度与申购状态变化，页面横幅提醒，webhook 推送通知
+- **日申购额度监控**：交易日 9:00-19:00 每小时检测 QDII 基金额度与申购状态变化，页面横幅提醒，webhook 推送通知
+
+## Docker Compose 部署（单进程 + 内置 scheduler）
+
+说明：
+- Flask 单进程运行，scheduler 在容器内运行（避免多进程导致任务重复）
+- SQLite 直接放在容器内（不做持久化），重建容器会丢数据
+
+```
+# 构建并后台启动
+docker compose up -d --build
+
+# 查看日志
+docker compose logs -f
+
+# 停止
+docker compose down
+```
+
+访问：
+- http://localhost:5000/qdii
 
 ## 完整部署方案：Ubuntu + Nginx + PM2
 
@@ -126,7 +146,7 @@ sudo systemctl reload nginx   # 重载配置
 
 ### 日申购额度监控
 
-系统在交易日（周一至周五）9:00-15:00 每 30 分钟自动检测 QDII 基金的日申购限额和申购状态变化。
+系统在交易日（周一至周五）9:00-19:00 每小时自动检测 QDII 基金的日申购限额和申购状态变化。
 
 - 检测到变化后自动更新 `funds` 表并记录到 `quota_changes` 表
 - 前端页面每 15 分钟轮询一次，顶部横幅展示变动详情（手动关闭后标记已读，不再重复提醒）

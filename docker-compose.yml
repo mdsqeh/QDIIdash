@@ -1,0 +1,8 @@
+services:
+  fundx:
+    build: .
+    expose:
+      - "5000"
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai

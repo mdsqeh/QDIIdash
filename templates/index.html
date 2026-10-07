@@ -445,7 +445,7 @@ keywords: QDII基金, 折溢价率, 基金监控, 日额度, 纳斯达克100, �
                     <span class="header-badge">● LIVE</span>
                 </h1>
                 <p class="header-meta">
-                    更新于 <span id="updateDate">-</span>
+                    更新于 <span id="updateDate">-</span> · 数据源 <span id="dataSource">-</span> · 共 <span id="totalCount">-</span> 只
                 </p>
             </div>
         </div>
@@ -482,11 +482,11 @@ keywords: QDII基金, 折溢价率, 基金监控, 日额度, 纳斯达克100, �
 
     <div class="quota-notice" id="quotaNotice">
         <span class="quota-notice-content" id="quotaNoticeContent"></span>
-        <button class="quota-notice-close" onclick="dismissQuotaNotice()">&times;</button>
+        <button class="quota-notice-close" onclick="dismissQuotaNotice(event)">&times;</button>
     </div>
     <div class="quota-panel" id="quotaPanel">
         <div class="quota-panel-toolbar">
-            <input type="date" id="quotaDate">
+            <input type="date" id="quotaDate" onchange="loadQuotaHistory()">
             <span class="quota-panel-count" id="quotaCount"></span>
             <div class="quota-panel-actions">
                 <button class="btn btn-outline" onclick="markAllQuotaRead()">全部已读</button>
@@ -595,7 +595,7 @@ const TAB_CONFIG = {
         csvKeys: ['code','name','ftype','market','nav','daily_change','premium_discount','ret_1y','ret_2y','ret_3y','ret_4y','ret_5y','ret_10y','ret_ann','total_ret','mgmt_fee','cust_fee','est_date','upd_date','purchase_status','daily_limit'],
     },
     quota: {
-        api: '/qdii/api/quota/history',
+        api: '/api/quota/history',
         footer: '交易日 9:00-19:00 每小时检测',
         isDataTab: false,
         columns: [
@@ -1153,7 +1153,12 @@ async function toggleFilterDropdown(col) {
     const th = document.getElementById('th_' + col);
     const rect = th.getBoundingClientRect();
     dd.style.top = rect.bottom + 'px';
-    dd.style.left = Math.max(8, rect.left) + 'px';
+    let left = rect.left;
+    const ddWidth = 220;
+    if (left + ddWidth > window.innerWidth) {
+        left = window.innerWidth - ddWidth - 16;
+    }
+    dd.style.left = Math.max(8, left) + 'px';
     dd.dataset.col = col;
 
     const cfg = TAB_CONFIG[state.tab];
@@ -1470,7 +1475,7 @@ function dateToString(d) {
 
 async function loadQuotaBadge() {
     try {
-        const resp = await fetch('/qdii/api/quota/changes');
+        const resp = await fetch('/api/quota/changes');
         if (!resp.ok) return;
         const data = await resp.json();
         const badge = document.getElementById('quotaUnreadBadge');
@@ -1486,7 +1491,7 @@ async function loadQuotaBadge() {
 async function loadQuotaHistory() {
     const dateVal = document.getElementById('quotaDate').value;
     try {
-        const resp = await fetch(`/qdii/api/quota/history?date=${dateVal}`);
+        const resp = await fetch(`/api/quota/history?date=${dateVal}`);
         if (!resp.ok) return;
         const data = await resp.json();
         const cardList = document.getElementById('quotaCardList');
@@ -1524,7 +1529,7 @@ async function loadQuotaHistory() {
 }
 
 function markQuotaRead(id) {
-    fetch('/qdii/api/quota/ack-single', {
+    fetch('/api/quota/ack-single', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({id})
@@ -1545,7 +1550,7 @@ function markQuotaRead(id) {
 }
 
 function markAllQuotaRead() {
-    fetch('/qdii/api/quota/ack', {method: 'POST'}).then(() => {
+    fetch('/api/quota/ack', {method: 'POST'}).then(() => {
         loadQuotaHistory();
         loadQuotaBadge();
     });
@@ -1558,7 +1563,7 @@ function jumpToFund(code) {
 }
 async function checkQuotaChanges() {
     try {
-        const resp = await fetch('/qdii/api/quota/changes');
+        const resp = await fetch('/api/quota/changes');
         if (!resp.ok) return;
         const data = await resp.json();
         if (data.length === 0) {
@@ -1584,9 +1589,10 @@ async function checkQuotaChanges() {
     } catch(e) {/* ignore */}
 }
 
-function dismissQuotaNotice() {
+function dismissQuotaNotice(event) {
+    if (event) event.stopPropagation();
     document.getElementById('quotaNotice').style.display = 'none';
-    fetch('/qdii/api/quota/ack', { method: 'POST' }).catch(() => {});
+    fetch('/api/quota/ack', { method: 'POST' }).catch(() => {});
     loadQuotaBadge();
 }
 

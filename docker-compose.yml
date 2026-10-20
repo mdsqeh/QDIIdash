@@ -8,4 +8,4 @@ services:
       - TZ=Asia/Shanghai
       - DATA_DIR=/app/data
     volumes:
-      - ./data:/app/data
+      - /fundx/data:/app/data

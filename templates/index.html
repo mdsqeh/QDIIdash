@@ -515,9 +515,8 @@ keywords: QDII基金, 折溢价率, 基金监控, 日额度, 纳斯达克100, �
         <button class="btn btn-outline" onclick="resetFilter()">清除筛选</button>
         <button class="btn btn-outline" id="watchlistBtn" onclick="toggleWatchlistFilter()">☐ 自选 (0)</button>
         <button class="btn btn-outline" id="positionBtn" onclick="togglePositionFilter()">💰 持仓 (0)</button>
-        <button class="btn btn-primary" onclick="exportCSV()">导出 CSV</button>
-        <button class="btn btn-outline" onclick="exportLocalData()">导出自选</button>
-        <button class="btn btn-outline" onclick="document.getElementById('importInput').click()">导入自选</button>
+        <button class="btn btn-outline" onclick="exportLocalData()">导出</button>
+        <button class="btn btn-outline" onclick="document.getElementById('importInput').click()">导入</button>
         <input type="file" id="importInput" accept=".json" style="display:none" onchange="importLocalData(event)">
         <span class="fetch-status" id="fetchStatus"></span>
         <div class="mobile-sort">
@@ -654,8 +653,6 @@ const TAB_CONFIG = {
         statsKeys: ['total', 'pos_1y', 'ret_ann_gt_20'],
         statsLabels: ['全部', '成立以来每年正收益', '年化 > 20%'],
         statsFilters: [null, 'pos_1y', 'ann_gt'],
-        csvHeaders: ['基金代码','基金简称','基金类型','类型','市场','最新净值','日增长率','折溢价率','近1年涨跌幅','近2年涨跌幅','近3年涨跌幅','近4年涨跌幅','近5年涨跌幅','近10年涨跌幅','成立来年化收益','成立来总收益','管理费','托管费','成立日期','更新日期','申购状态','日累计额度'],
-        csvKeys: ['code','name','ftype','market','nav','daily_change','premium_discount','ret_1y','ret_2y','ret_3y','ret_4y','ret_5y','ret_10y','ret_ann','total_ret','mgmt_fee','cust_fee','est_date','upd_date','purchase_status','daily_limit'],
     },
     quota: {
         api: '/api/quota/history',
@@ -674,8 +671,6 @@ const TAB_CONFIG = {
         statsKeys: [],
         statsLabels: [],
         statsFilters: [],
-        csvHeaders: [],
-        csvKeys: [],
     },
 };
 
@@ -1134,63 +1129,6 @@ function onMobileOrder() {
     document.getElementById('mobileOrderBtn').textContent = state.order === 'asc' ? '↑' : '↓';
     state.page = 1;
     loadFunds();
-}
-
-async function exportCSV() {
-    const cfg = TAB_CONFIG[state.tab];
-    const hasColFilters = Object.keys(state.columnFilters).length > 0;
-    const params = new URLSearchParams({ sort: state.sort, order: state.order, per_page: 99999 });
-    if (state.search) {
-        const terms = state.search.split(/\s+/).filter(t => t);
-        const include = terms.filter(t => !t.startsWith('-'));
-        const exclude = terms.filter(t => t.startsWith('-')).map(t => t.slice(1));
-        if (include.length) params.set('search', include.join(' '));
-        if (exclude.length) params.set('exclude', exclude.join(' '));
-    }
-    if (state.filter && !isPresetFilter(state.filter)) params.set('filter', state.filter);
-    if (state.filter === 'ann_gt') params.set('ann_threshold', state.annThreshold);
-    const resp = await fetch(cfg.api + '?' + params.toString());
-    const data = await resp.json();
-
-    let exportFunds = data.funds;
-    if (hasColFilters) {
-        for (const [col, selectedValues] of Object.entries(state.columnFilters)) {
-            exportFunds = exportFunds.filter(r => {
-                let v = r[col];
-                if (v == null || v === '') v = '(空)';
-                else v = String(v);
-                return selectedValues.includes(v);
-            });
-        }
-    }
-    if (state.watchlistFilter) {
-        exportFunds = exportFunds.filter(r => state.watchlist.includes(r.code));
-    }
-    if (state.positionFilter) {
-        exportFunds = exportFunds.filter(r => state.positions.includes(r.code));
-    }
-    if (isPresetFilter(state.filter)) {
-        exportFunds = exportFunds.filter(r => matchesPresetFilter(r, state.filter));
-    }
-
-    if (exportFunds.length === 0) return;
-    let csv = cfg.csvHeaders.join(',') + '\n';
-    exportFunds.forEach(r => {
-        csv += cfg.csvKeys.map(k => {
-            let val = r[k];
-            if (val == null) return '';
-            return '"' + val + '"';
-        }).join(',') + '\n';
-    });
-    const blob = new Blob(['﻿' + csv], {type: 'text/csv;charset=utf-8;'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'QDII_' + new Date().toISOString().slice(0,10) + '.csv';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
 }
 
 // ═══════════════════════════════════════════════════

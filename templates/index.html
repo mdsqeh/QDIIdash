@@ -358,6 +358,61 @@ keywords: QDII基金, 折溢价率, 基金监控, 日额度, 纳斯达克100, �
     .quota-card-item .qv.old { color: var(--text-sub); }
     .quota-card-item .qv.new { color: var(--accent); font-weight: 700; }
 
+    .quota-link { cursor: pointer; border-bottom: 1px dashed rgba(245, 158, 11, 0.45); }
+    .quota-link:hover { color: var(--accent); }
+
+    /* ── Quota History Modal ── */
+    .quota-modal {
+        position: fixed; inset: 0; z-index: 1000; display: none;
+        align-items: center; justify-content: center; padding: 16px;
+        background: rgba(5, 10, 20, 0.72); backdrop-filter: blur(3px);
+    }
+    .quota-modal.show { display: flex; }
+    .quota-modal-panel {
+        width: min(760px, 92vw); max-height: 90vh; overflow-y: auto;
+        background: var(--surface); border: 1px solid var(--surface-border);
+        border-radius: var(--radius); padding: 16px 18px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+    }
+    .quota-modal-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .quota-modal-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+    .quota-modal-code { font-family: var(--font-display); font-size: 1.05rem; font-weight: 700; color: var(--accent); }
+    .quota-modal-name { font-size: 0.9rem; color: var(--text-sub); }
+    .quota-modal-close {
+        background: none; border: none; color: var(--text-muted); cursor: pointer;
+        font-size: 1.4rem; line-height: 1; padding: 0 4px;
+    }
+    .quota-modal-close:hover { color: var(--text); }
+    .quota-modal-summary { display: flex; gap: 28px; flex-wrap: wrap; margin: 14px 0 12px; }
+    .quota-summary-item { display: flex; flex-direction: column; gap: 2px; }
+    .quota-summary-item .lbl { font-size: 0.7rem; color: var(--text-muted); }
+    .quota-summary-item .val { font-family: var(--font-display); font-size: 0.95rem; font-weight: 600; }
+    .quota-summary-item .val.accent { color: var(--accent); }
+    .quota-range { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+    .quota-range button {
+        padding: 4px 12px; border: 1px solid var(--surface-border); border-radius: 20px;
+        background: transparent; color: var(--text-sub); font-size: 0.75rem; cursor: pointer;
+        transition: all 0.15s;
+    }
+    .quota-range button:hover { color: var(--text); border-color: var(--text-muted); }
+    .quota-range button.active { background: var(--accent-glow); border-color: rgba(245,158,11,0.4); color: var(--accent); }
+    .quota-chart { width: 100%; height: 280px; }
+    .quota-chart-empty {
+        height: 280px; display: flex; align-items: center; justify-content: center;
+        color: var(--text-muted); font-size: 0.85rem;
+    }
+    .quota-events { margin-top: 12px; border-top: 1px solid var(--surface-border); padding-top: 10px; }
+    .quota-events-title { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 6px; }
+    .quota-event-row {
+        display: flex; align-items: center; gap: 10px; font-size: 0.75rem;
+        padding: 4px 0; border-bottom: 1px solid rgba(30, 45, 69, 0.35);
+    }
+    .quota-event-row:last-child { border-bottom: none; }
+    .quota-event-time { color: var(--text-muted); font-family: var(--font-display); white-space: nowrap; }
+    .quota-event-text { color: var(--text-sub); }
+    .quota-event-text strong { color: var(--text); font-weight: 600; }
+    .quota-event-text .new { color: var(--accent); }
+
     /* ── Scrollbar ── */
     .table-wrap::-webkit-scrollbar { height: 6px; }
     .table-wrap::-webkit-scrollbar-track { background: transparent; }
@@ -418,6 +473,11 @@ keywords: QDII基金, 折溢价率, 基金监控, 日额度, 纳斯达克100, �
 
         .pagination .info { font-size: 0.72rem; }
         .pagination { gap: 8px; }
+
+        .quota-modal { padding: 10px; }
+        .quota-modal-panel { width: 94vw; padding: 14px; }
+        .quota-modal-summary { gap: 18px; }
+        .quota-chart, .quota-chart-empty { height: 220px; }
     }
 </style>
 </head>
@@ -513,6 +573,27 @@ keywords: QDII基金, 折溢价率, 基金监控, 日额度, 纳斯达克100, �
     </div>
 </div>
 
+<div class="quota-modal" id="quotaModal" onclick="if (event.target === this) closeQuotaChart()">
+    <div class="quota-modal-panel" role="dialog" aria-modal="true" aria-labelledby="quotaModalTitle">
+        <div class="quota-modal-header">
+            <div class="quota-modal-title">
+                <span class="quota-modal-code" id="quotaModalTitle">-</span>
+                <span class="quota-modal-name" id="quotaModalName"></span>
+            </div>
+            <button type="button" class="quota-modal-close" onclick="closeQuotaChart()" aria-label="关闭">&times;</button>
+        </div>
+        <div class="quota-modal-summary" id="quotaModalSummary"></div>
+        <div class="quota-range" id="quotaRange">
+            <button type="button" data-days="30" onclick="setQuotaRange(30)">30天</button>
+            <button type="button" data-days="90" class="active" onclick="setQuotaRange(90)">90天</button>
+            <button type="button" data-days="365" onclick="setQuotaRange(365)">1年</button>
+            <button type="button" data-days="all" onclick="setQuotaRange('all')">全部</button>
+        </div>
+        <div id="quotaChart" class="quota-chart"></div>
+        <div class="quota-events" id="quotaEvents"></div>
+    </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -551,7 +632,7 @@ const TAB_CONFIG = {
             {key:'est_date', label:'成立日',   thStyle:'',             tdClass:'',           tdStyle:'', render:(r)=>r.est_date||'-'},
             {key:'upd_date', label:'更新',     thStyle:'',             tdClass:'',           tdStyle:'', render:(r)=>r.upd_date||'-'},
             {key:'purchase_status', label:'申购', thStyle:'',          tdClass:'',           tdStyle:'', render:(r)=>fmtStatus(r.purchase_status)},
-            {key:'daily_limit', label:'日额度', thStyle:'',            tdClass:'',           tdStyle:'font-family:var(--font-display)', render:(r)=>fmtLimit(r.daily_limit)},
+            {key:'daily_limit', label:'日额度', thStyle:'',            tdClass:'',           tdStyle:'font-family:var(--font-display)', render:(r)=>`<span class="quota-link" onclick="openQuotaChart('${r.code}')" title="查看额度走势">${fmtLimit(r.daily_limit)}</span>`},
         ],
         sortOptions: [
             {value:'code', label:'基金代码'},
@@ -1494,7 +1575,7 @@ async function loadQuotaHistory() {
             const markColor = c.is_read ? 'var(--text-muted)' : 'var(--accent)';
             return `<div class="quota-card ${unreadCls}" data-id="${c.id}">
                 <div class="quota-card-header">
-                    <span class="code" onclick="jumpToFund('${c.code}')">${c.code}</span>
+                    <span class="code" onclick="openQuotaChart('${c.code}')" title="查看额度走势">${c.code}</span>
                     <span class="name">${escapeHtml(c.name || c.code)}</span>
                     <span class="time">${time}</span>
                     <span class="mark-btn" onclick="markQuotaRead(${c.id})" style="color:${markColor}">${markIcon}</span>
@@ -1539,11 +1620,223 @@ function markAllQuotaRead() {
     });
 }
 
-function jumpToFund(code) {
-    state.search = code;
-    document.getElementById('searchInput').value = code;
-    switchTab('qdii', true);
+// ── Quota History Chart ────────────────────────────────────────
+
+const QUOTA_CHART_SRC = '/static/vendor/echarts.min.js';
+let quotaChart = null;
+let quotaChartCode = null;
+let quotaChartDays = 90;
+let quotaChartRequestId = 0;
+let quotaEChartsPromise = null;
+
+function ensureQuotaChartLib() {
+    if (window.echarts) return Promise.resolve();
+    if (!quotaEChartsPromise) {
+        quotaEChartsPromise = new Promise((resolve, reject) => {
+            const script = document.createElement('script');
+            script.src = QUOTA_CHART_SRC;
+            script.onload = resolve;
+            script.onerror = () => {
+                quotaEChartsPromise = null;
+                reject(new Error('图表组件加载失败'));
+            };
+            document.head.appendChild(script);
+        });
+    }
+    return quotaEChartsPromise;
 }
+
+function fmtQuotaAxis(value) {
+    if (value == null) return '';
+    if (value >= 10000) {
+        return (value / 10000).toLocaleString('zh-CN', { maximumFractionDigits: 1 }) + '万';
+    }
+    return value.toLocaleString('zh-CN');
+}
+
+function fmtQuotaValue(limit, text) {
+    if (limit == null) return text || '不限';
+    return limit.toLocaleString('zh-CN');
+}
+
+function setQuotaRangeButton(days) {
+    document.querySelectorAll('#quotaRange button').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.days === String(days));
+    });
+}
+
+function openQuotaChart(code) {
+    quotaChartCode = code;
+    quotaChartDays = 90;
+    setQuotaRangeButton(90);
+    document.getElementById('quotaModalTitle').textContent = code;
+    document.getElementById('quotaModalName').textContent = '';
+    document.getElementById('quotaModalSummary').innerHTML = '';
+    document.getElementById('quotaEvents').innerHTML = '';
+    document.getElementById('quotaModal').classList.add('show');
+    document.body.style.overflow = 'hidden';
+    loadQuotaChart();
+}
+
+function closeQuotaChart() {
+    document.getElementById('quotaModal').classList.remove('show');
+    document.body.style.overflow = '';
+    quotaChartCode = null;
+    quotaChartRequestId++;
+    if (quotaChart) {
+        quotaChart.dispose();
+        quotaChart = null;
+    }
+}
+
+function setQuotaRange(days) {
+    quotaChartDays = days === 'all' ? 'all' : Number(days);
+    setQuotaRangeButton(days);
+    loadQuotaChart();
+}
+
+async function loadQuotaChart() {
+    if (!quotaChartCode) return;
+    const code = quotaChartCode;
+    const requestId = ++quotaChartRequestId;
+    const chartEl = document.getElementById('quotaChart');
+    chartEl.innerHTML = '<div class="quota-chart-empty">加载中...</div>';
+    try {
+        const resp = await fetch(`/api/quota/fund/${encodeURIComponent(code)}?days=${quotaChartDays}`);
+        if (!resp.ok) throw new Error('加载失败');
+        const data = await resp.json();
+        if (code !== quotaChartCode || requestId !== quotaChartRequestId) return;
+        renderQuotaChart(data, requestId);
+    } catch (e) {
+        if (code !== quotaChartCode || requestId !== quotaChartRequestId) return;
+        chartEl.innerHTML = '<div class="quota-chart-empty">额度历史加载失败</div>';
+    }
+}
+
+function renderQuotaChart(data, requestId) {
+    document.getElementById('quotaModalTitle').textContent = data.code;
+    document.getElementById('quotaModalName').textContent = data.name || '';
+
+    const current = data.current || {};
+    const limitText = fmtQuotaValue(current.limit, current.text);
+    const changeCount = data.change_count != null
+        ? data.change_count
+        : (data.events || []).filter(e => e.field === 'daily_limit').length;
+    document.getElementById('quotaModalSummary').innerHTML = `
+        <div class="quota-summary-item"><span class="lbl">当前日额度</span><span class="val accent">${escapeHtml(limitText)}</span></div>
+        <div class="quota-summary-item"><span class="lbl">申购状态</span><span class="val">${escapeHtml(current.status || '-')}</span></div>
+        <div class="quota-summary-item"><span class="lbl">区间变动</span><span class="val">${changeCount} 次</span></div>`;
+
+    renderQuotaEvents(data.events || []);
+
+    const chartEl = document.getElementById('quotaChart');
+    const points = data.points || [];
+    if (!points.some(p => p.limit != null)) {
+        if (quotaChart) {
+            quotaChart.dispose();
+            quotaChart = null;
+        }
+        chartEl.innerHTML = '<div class="quota-chart-empty">暂无可绘制的额度数据</div>';
+        return;
+    }
+
+    ensureQuotaChartLib().then(() => {
+        if (data.code !== quotaChartCode || requestId !== quotaChartRequestId) return;
+        if (quotaChart) {
+            quotaChart.dispose();
+            quotaChart = null;
+        }
+        chartEl.innerHTML = '';
+        quotaChart = echarts.init(chartEl);
+
+        const seriesData = points.map(p => {
+            const timestamp = new Date(p.date + 'T00:00:00+08:00').getTime();
+            return [timestamp, p.limit];
+        });
+
+        quotaChart.setOption({
+            animationDuration: 200,
+            grid: { left: 58, right: 20, top: 22, bottom: 30 },
+            tooltip: {
+                trigger: 'axis',
+                backgroundColor: '#111B2E',
+                borderColor: '#1E2D45',
+                textStyle: { color: '#E8EDF5', fontSize: 12 },
+                formatter: function (params) {
+                    if (!params.length) return '';
+                    const point = points[params[0].dataIndex];
+                    const limit = point.limit == null
+                        ? escapeHtml(point.text || '不限')
+                        : escapeHtml(fmtQuotaValue(point.limit, point.text)) + ' 元';
+                    const status = point.status ? `<br/>申购状态：${escapeHtml(point.status)}` : '';
+                    return `<b>${point.date}</b><br/>日额度：${limit}${status}`;
+                }
+            },
+            xAxis: {
+                type: 'time',
+                axisLine: { lineStyle: { color: '#1E2D45' } },
+                axisLabel: {
+                    color: '#5A6D8A',
+                    formatter: function (value) {
+                        const d = new Date(value);
+                        return String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+                    }
+                },
+                splitLine: { show: false }
+            },
+            yAxis: {
+                type: 'value',
+                scale: true,
+                axisLabel: { color: '#5A6D8A', formatter: fmtQuotaAxis },
+                splitLine: { lineStyle: { color: 'rgba(30, 45, 69, 0.45)' } }
+            },
+            dataZoom: [{ type: 'inside', throttle: 50 }],
+            series: [{
+                type: 'line',
+                step: 'end',
+                data: seriesData,
+                connectNulls: false,
+                showSymbol: true,
+                symbol: 'circle',
+                symbolSize: 6,
+                lineStyle: { color: '#F59E0B', width: 2 },
+                itemStyle: { color: '#F59E0B' },
+                emphasis: { focus: 'series' }
+            }]
+        });
+    }).catch(() => {
+        if (data.code !== quotaChartCode || requestId !== quotaChartRequestId) return;
+        chartEl.innerHTML = '<div class="quota-chart-empty">图表组件加载失败</div>';
+    });
+}
+
+function renderQuotaEvents(events) {
+    const eventsEl = document.getElementById('quotaEvents');
+    let html = '<div class="quota-events-title">最近变动</div>';
+    if (!events.length) {
+        eventsEl.innerHTML = html + '<div class="quota-event-row"><span class="quota-event-text">暂无变动记录</span></div>';
+        return;
+    }
+    html += events.map(e => {
+        const time = new Date(e.detected_at).toLocaleString('zh-CN', {
+            timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit'
+        });
+        const label = e.field === 'daily_limit' ? '日额度' : '申购状态';
+        return `<div class="quota-event-row">
+            <span class="quota-event-time">${time}</span>
+            <span class="quota-event-text">${label}：${escapeHtml(e.old_value || '-')} → <strong class="new">${escapeHtml(e.new_value || '-')}</strong></span>
+        </div>`;
+    }).join('');
+    eventsEl.innerHTML = html;
+}
+
+document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') closeQuotaChart();
+});
+window.addEventListener('resize', function () {
+    if (quotaChart) quotaChart.resize();
+});
 
 setInterval(loadQuotaBadge, 15 * 60 * 1000);
 </script>

@@ -13,13 +13,14 @@ Flask + SQLite 后端、纯前端展示的 QDII 基金数据看板，能自动�
 - 自选/自评级（localStorage 持久化，支持导出/导入备份）
 - 移动端自适应卡片布局
 - 定时自动采集 + 启动时立即采集
-- **日申购额度监控**：交易日 9:00-19:00 每小时检测 QDII 基金额度与申购状态变化，页面横幅提醒，webhook 推送通知
+- **日申购额度监控**：交易日 9:00-19:00 每小时检测 QDII 基金额度与申购状态变化，未读徽标提醒，webhook 推送通知
+- **额度历史曲线**：每日快照落库，点击基金「日额度」查看 30 天 / 90 天 / 1 年 / 全部区间的阶梯走势
 
 ## Docker Compose 部署（单进程 + 内置 scheduler）
 
 说明：
 - Flask 单进程运行，scheduler 在容器内运行（避免多进程导致任务重复）
-- SQLite 直接放在容器内（不做持久化），重建容器会丢数据
+- SQLite 数据持久化到宿主机 `./data/qdii.db`，重建容器不会丢数据
 
 ```
 # 构建并后台启动
@@ -31,6 +32,20 @@ docker compose logs -f
 # 停止
 docker compose down
 ```
+
+首次从旧版本升级（旧库还在容器里）时，先停止容器并把库复制到宿主机：
+
+```
+docker compose stop
+cid=$(docker compose ps -aq fundx)
+mkdir -p data
+docker cp "$cid":/app/qdii.db data/qdii.db
+docker cp "$cid":/app/qdii.db-wal data/qdii.db-wal 2>/dev/null || true
+docker cp "$cid":/app/qdii.db-shm data/qdii.db-shm 2>/dev/null || true
+docker compose up -d --build
+```
+
+不要先执行 `docker compose down`，否则容器被删除后旧库就找不到了。
 
 访问：
 - http://localhost:5000/qdii
@@ -148,13 +163,21 @@ sudo systemctl reload nginx   # 重载配置
 
 系统在交易日（周一至周五）9:00-19:00 每小时自动检测 QDII 基金的日申购限额和申购状态变化。
 
-- 检测到变化后自动更新 `funds` 表并记录到 `quota_changes` 表
-- 前端页面每 15 分钟轮询一次，顶部横幅展示变动详情（手动关闭后标记已读，不再重复提醒）
+- 检测到变化后自动更新 `funds` 表，写入 `quota_daily` 每日快照和 `quota_changes` 变动事件
+- 「额度变动」Tab 展示历史变动并维护未读徽标，前端每 15 分钟刷新一次
+- 点击基金「日额度」或额度变动记录中的代码，可查看该基金的额度历史阶梯曲线
 - 同时通过 webhook 推送消息到 `http://127.0.0.1:3000/webhook/cme`（密钥 `addressTagPWD`），如需修改可在 `app.py` 中调整 `WEBHOOK_URL` / `WEBHOOK_SECRET`
 
 ---
 
 ## 更新日志
+
+### 2026-10-20
+
+- **额度历史曲线**：新增 `quota_daily` 每日快照表，点击基金「日额度」或额度变动记录中的代码，可查看 30 天 / 90 天 / 1 年 / 全部的阶梯走势
+- **额度监控调整**：变动检测改为对比每日快照，避免 21:00 增量更新覆盖 `funds` 后漏记；新增 21:05 检测任务
+- **移除顶部额度横幅**：改为「额度变动」Tab 未读徽标
+- **Docker 数据持久化**：SQLite 迁移到宿主机 `./data/qdii.db`，重建容器不再丢数据
 
 ### 2026-09-03
 

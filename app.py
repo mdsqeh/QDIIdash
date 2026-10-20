@@ -8,10 +8,11 @@ QDII 基金数据看板 — Flask + SQLite Web 应用
 QDII 数据每天 21:00（北京时间）定时采集。
 """
 import json
+import math
 import sqlite3
 import threading
 import os
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 
 from flask import Flask, g, jsonify, render_template, request
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -21,9 +22,11 @@ from quota_watcher import check_quotas
 
 app = Flask(__name__)
 
-# ── 数据库路径（放在 qdii 目录下） ──────────────────────────────
+# ── 数据库路径（默认放在项目目录，可用 DATA_DIR 指向持久化目录） ──
 DB_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(DB_DIR, 'qdii.db')
+DATA_DIR = os.environ.get('DATA_DIR', DB_DIR)
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_PATH = os.path.join(DATA_DIR, 'qdii.db')
 _FULL_FETCH_FLAG = DB_PATH + '.full_fetch_flag'
 
 
@@ -88,6 +91,20 @@ def init_db():
                 detected_at TEXT NOT NULL,
                 is_read     INTEGER DEFAULT 0
             );
+            CREATE INDEX IF NOT EXISTS idx_quota_changes_code_time
+                ON quota_changes (code, detected_at);
+            CREATE TABLE IF NOT EXISTS quota_daily (
+                code              TEXT NOT NULL,
+                trade_date        TEXT NOT NULL,
+                daily_limit       REAL,
+                daily_limit_text  TEXT,
+                purchase_status   TEXT,
+                first_seen_at     TEXT NOT NULL,
+                last_seen_at      TEXT NOT NULL,
+                PRIMARY KEY (code, trade_date)
+            );
+            CREATE INDEX IF NOT EXISTS idx_quota_daily_date
+                ON quota_daily (trade_date);
         """)
 
     # 迁移：给已有数据库加新列
@@ -401,7 +418,7 @@ def api_fetch_status():
 
 @app.route('/api/quota/changes')
 def api_quota_changes():
-    """返回未读的额度变动记录（用于 banner 提醒）。"""
+    """返回未读的额度变动记录（用于 Tab 未读徽标）。"""
     db = get_db()
     rows = db.execute(
         "SELECT q.*, f.name FROM quota_changes q LEFT JOIN funds f ON q.code = f.code WHERE q.is_read = 0 ORDER BY q.id DESC LIMIT 50"
@@ -427,6 +444,234 @@ def api_quota_history():
         params
     ).fetchall()
     return jsonify([dict(r) for r in rows])
+
+
+SHANGHAI_TZ = timezone(timedelta(hours=8))
+UNLIMITED_LIMIT = 1_000_000_000
+
+
+def _to_number(value):
+    if value is None:
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    text = str(value).strip().replace(',', '')
+    if not text or text.lower() in ('nan', 'none', '不限'):
+        return None
+    try:
+        number = float(text)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(number) else number
+
+
+def _to_limit(value):
+    """把额度文本转成数值；'不限'、空值、NaN、10亿以上返回 None。"""
+    number = _to_number(value)
+    if number is None or number >= UNLIMITED_LIMIT:
+        return None
+    return number
+
+
+def _limit_text(value):
+    """统一额度展示文本，避免 1000 和 1000.0 显示成两个值。"""
+    if value is None:
+        return ''
+    text = str(value).strip()
+    if not text or text.lower() in ('nan', 'none'):
+        return ''
+    number = _to_number(text)
+    if number is None:
+        return text
+    if number >= UNLIMITED_LIMIT:
+        return '不限'
+    if number == int(number):
+        return str(int(number))
+    return ('%.4f' % number).rstrip('0').rstrip('.')
+
+
+def _local_date(timestamp):
+    """把数据库中带时区的时间转成北京时间日期。"""
+    try:
+        dt = datetime.fromisoformat(timestamp)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(SHANGHAI_TZ).date()
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_quota_series(daily_rows, changes, current, days):
+    """合并每日快照与历史变动事件，生成阶梯曲线数据。"""
+    points_by_date = {}
+    for row in daily_rows:
+        points_by_date[row['trade_date']] = {
+            'date': row['trade_date'],
+            'limit': _to_limit(row['daily_limit']),
+            'text': row['daily_limit_text'] or _limit_text(row['daily_limit']),
+            'status': row['purchase_status'] or '',
+        }
+    daily_dates = set(points_by_date)
+
+    limit_events = sorted(
+        (c for c in changes if c['field'] == 'daily_limit'),
+        key=lambda c: c['detected_at']
+    )
+    status_events = sorted(
+        (c for c in changes if c['field'] == 'purchase_status'),
+        key=lambda c: c['detected_at']
+    )
+
+    # 旧事件只有变动后的值，补一个变动前的起点，曲线才能从原值开始。
+    if limit_events:
+        first_date = _local_date(limit_events[0]['detected_at'])
+        old_limit = _to_limit(limit_events[0]['old_value'])
+        if first_date is not None and old_limit is not None:
+            prev_date = (first_date - timedelta(days=1)).isoformat()
+            if prev_date not in points_by_date:
+                points_by_date[prev_date] = {
+                    'date': prev_date,
+                    'limit': old_limit,
+                    'text': _limit_text(limit_events[0]['old_value']),
+                    'status': '',
+                }
+
+    for change in limit_events:
+        change_date = _local_date(change['detected_at'])
+        if change_date is None:
+            continue
+        date_str = change_date.isoformat()
+        if date_str in daily_dates:
+            continue
+        points_by_date[date_str] = {
+            'date': date_str,
+            'limit': _to_limit(change['new_value']),
+            'text': _limit_text(change['new_value']),
+            'status': '',
+        }
+
+    points = sorted(points_by_date.values(), key=lambda p: p['date'])
+
+    # 旧事件没有每日状态，按时间顺序补上当时最后的申购状态。
+    if status_events:
+        status_timeline = []
+        for change in status_events:
+            change_date = _local_date(change['detected_at'])
+            if change_date is not None:
+                status_timeline.append((change_date.isoformat(), change['new_value'] or ''))
+        idx = 0
+        last_status = ''
+        for point in points:
+            while idx < len(status_timeline) and status_timeline[idx][0] <= point['date']:
+                last_status = status_timeline[idx][1]
+                idx += 1
+            if not point['status']:
+                point['status'] = last_status
+
+    today = datetime.now(SHANGHAI_TZ).date()
+    today_str = today.isoformat()
+    if points and points[-1]['date'] == today_str:
+        if current['limit'] is not None or current['text']:
+            points[-1].update({
+                'limit': current['limit'],
+                'text': current['text'],
+                'status': current['status'],
+            })
+    elif current['limit'] is not None or current['text']:
+        points.append({
+            'date': today_str,
+            'limit': current['limit'],
+            'text': current['text'],
+            'status': current['status'],
+        })
+    if not points:
+        points.append({
+            'date': today_str,
+            'limit': current['limit'],
+            'text': current['text'],
+            'status': current['status'],
+        })
+
+    if days is not None:
+        cutoff = (today - timedelta(days=days - 1)).isoformat()
+        before = [p for p in points if p['date'] < cutoff]
+        points = [p for p in points if p['date'] >= cutoff]
+        if before:
+            last = before[-1]
+            points.insert(0, {
+                'date': cutoff,
+                'limit': last['limit'],
+                'text': last['text'],
+                'status': last['status'],
+            })
+
+    return points
+
+
+@app.route('/api/quota/fund/<code>')
+def api_quota_fund(code):
+    """返回单只基金的额度历史曲线和变动记录。"""
+    db = get_db()
+    fund = db.execute(
+        "SELECT code, name, purchase_status, daily_limit FROM funds WHERE code = ?",
+        (code,)
+    ).fetchone()
+    if fund is None:
+        return jsonify({'error': 'fund not found'}), 404
+
+    days_param = request.args.get('days', '90')
+    if days_param == 'all':
+        days = None
+    else:
+        days = request.args.get('days', 90, type=int)
+        if days is None or days <= 0:
+            days = 90
+        days = min(days, 3650)
+
+    daily_rows = db.execute(
+        """SELECT trade_date, daily_limit, daily_limit_text, purchase_status
+           FROM quota_daily WHERE code = ? ORDER BY trade_date""",
+        (code,)
+    ).fetchall()
+    changes = db.execute(
+        """SELECT detected_at, field, old_value, new_value
+           FROM quota_changes WHERE code = ?
+             AND field IN ('daily_limit', 'purchase_status')
+           ORDER BY detected_at, id""",
+        (code,)
+    ).fetchall()
+
+    latest_daily = daily_rows[-1] if daily_rows else None
+    current = {
+        'date': datetime.now(SHANGHAI_TZ).date().isoformat(),
+        'limit': _to_limit(fund['daily_limit']),
+        'text': _limit_text(fund['daily_limit']),
+        'status': fund['purchase_status'] or '',
+    }
+    if current['limit'] is None and not current['text'] and latest_daily is not None:
+        # funds 只存数值，额度为“不限”时用快照文本补上展示。
+        current['text'] = latest_daily['daily_limit_text'] or ''
+        current['status'] = current['status'] or latest_daily['purchase_status'] or ''
+
+    points = _build_quota_series(daily_rows, changes, current, days)
+
+    visible_changes = changes
+    if days is not None:
+        cutoff = (datetime.now(SHANGHAI_TZ).date() - timedelta(days=days - 1)).isoformat()
+        visible_changes = [
+            c for c in changes
+            if (_local_date(c['detected_at']) or date.min).isoformat() >= cutoff
+        ]
+
+    change_count = sum(1 for c in visible_changes if c['field'] == 'daily_limit')
+    return jsonify({
+        'code': fund['code'],
+        'name': fund['name'],
+        'current': current,
+        'points': points,
+        'change_count': change_count,
+        'events': [dict(c) for c in reversed(visible_changes)][:20],
+    })
 
 
 @app.route('/api/quota/ack', methods=['POST'])
@@ -458,8 +703,9 @@ def _start_scheduler():
     scheduler.add_job(_do_fetch, 'cron', day=1, hour=21, minute=0, id='monthly_fetch')
     scheduler.add_job(_do_fetch_incremental, 'cron', hour=21, minute=0, id='daily_incremental')
     scheduler.add_job(_do_check_quota, 'cron', day_of_week='mon-fri', hour='9-19', minute=0, id='quota_check')
+    scheduler.add_job(_do_check_quota, 'cron', day_of_week='mon-fri', hour=21, minute=5, id='quota_check_after_fetch')
     scheduler.start()
-    print("📅 定时任务已启动：每月1号 21:00 全量采集，每日 21:00 增量更新，额度监控交易日 9:00-19:00 每小时")
+    print("📅 定时任务已启动：每月1号 21:00 全量采集，每日 21:00 增量更新，额度监控交易日 9:00-19:00 每小时及 21:05")
 
 
 if __name__ == '__main__':

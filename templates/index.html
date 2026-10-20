@@ -328,22 +328,8 @@ keywords: QDII基金, 折溢价率, 基金监控, 日额度, 纳斯达克100, �
     .toast.success { background: linear-gradient(135deg, #059669, #10B981); }
     .toast.error { background: linear-gradient(135deg, #BE123C, #F43F5E); }
 
-    /* ── Quota Notice Banner ── */
-    .quota-notice {
-        background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.2);
-        border-radius: var(--radius-sm); padding: 8px 14px; margin-bottom: 12px;
-        display: none; align-items: center; justify-content: space-between; gap: 12px;
-        font-size: 0.85rem; line-height: 1.5; color: var(--text);
-    }
-    .quota-notice-content { flex: 1; }
-    .quota-notice-close {
-        background: none; border: none; color: var(--text-muted); cursor: pointer;
-        font-size: 1.2rem; padding: 0 4px; line-height: 1; flex-shrink: 0;
-    }
-    .quota-notice-close:hover { color: var(--text); }
-
     /* ── Quota Panel (Tab Content) ── */
-    .quota-panel { display: none; flex-direction: column; gap: 12px; }
+    .quota-panel { display: none; flex-direction: column; gap: 12px; width: 100%; max-width: 960px; margin: 0 auto; }
     .quota-panel.active { display: flex; }
     .quota-panel-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     .quota-panel-toolbar input[type="date"] {
@@ -365,8 +351,8 @@ keywords: QDII基金, 折溢价率, 基金监控, 日额度, 纳斯达克100, �
     .quota-card-header .name { font-weight: 500; font-size: 0.85rem; color: var(--text); }
     .quota-card-header .time { color: var(--text-muted); font-size: 0.72rem; font-family: var(--font-display); margin-left: auto; }
     .quota-card-header .mark-btn { cursor: pointer; font-size: 1rem; padding: 2px 4px; margin-left: 4px; }
-    .quota-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 4px 12px; }
-    .quota-card-item { display: flex; flex-direction: column; gap: 2px; }
+    .quota-card-grid { display: flex; flex-wrap: wrap; gap: 4px 40px; }
+    .quota-card-item { display: flex; flex-direction: column; gap: 2px; min-width: 120px; }
     .quota-card-item .ql { color: var(--text-muted); font-size: 0.68rem; }
     .quota-card-item .qv { font-family: var(--font-display); font-size: 0.82rem; font-weight: 500; }
     .quota-card-item .qv.old { color: var(--text-sub); }
@@ -480,10 +466,6 @@ keywords: QDII基金, 折溢价率, 基金监控, 日额度, 纳斯达克100, �
         </div>
     </div>
 
-    <div class="quota-notice" id="quotaNotice">
-        <span class="quota-notice-content" id="quotaNoticeContent"></span>
-        <button class="quota-notice-close" onclick="dismissQuotaNotice(event)">&times;</button>
-    </div>
     <div class="quota-panel" id="quotaPanel">
         <div class="quota-panel-toolbar">
             <input type="date" id="quotaDate" onchange="loadQuotaHistory()">
@@ -788,6 +770,7 @@ function switchTab(tab, skipReset) {
         // 额度变动 Tab
         document.getElementById('quotaDate').value = dateToString(new Date());
         loadQuotaHistory();
+        loadQuotaBadge();
     }
 }
 
@@ -1561,44 +1544,8 @@ function jumpToFund(code) {
     document.getElementById('searchInput').value = code;
     switchTab('qdii', true);
 }
-async function checkQuotaChanges() {
-    try {
-        const resp = await fetch('/api/quota/changes');
-        if (!resp.ok) return;
-        const data = await resp.json();
-        if (data.length === 0) {
-            document.getElementById('quotaNotice').style.display = 'none';
-            return;
-        }
-        const maxLines = 3;
-        const lines = data.slice(0, maxLines).map(c => {
-            const label = c.field === 'daily_limit' ? '日申购限额' : '申购状态';
-            const name = escapeHtml(c.name || c.code);
-            const oldVal = escapeHtml(c.old_value || '-');
-            const newVal = escapeHtml(c.new_value || '-');
-            return `基金 ${escapeHtml(c.code)}（${name}）${label}：${oldVal} → ${newVal}`;
-        });
-        if (data.length > maxLines) {
-            lines.push(`等 ${data.length} 条额度变动`);
-        }
-        document.getElementById('quotaNoticeContent').innerHTML = lines.join('<br>');
-        document.getElementById('quotaNotice').style.display = 'flex';
-        document.getElementById('quotaNotice').style.cursor = 'pointer';
-        document.getElementById('quotaNotice').title = '点击查看额度变动记录';
-        document.getElementById('quotaNotice').onclick = () => { switchTab('quota'); document.getElementById('quotaNotice').style.display = 'none'; };
-    } catch(e) {/* ignore */}
-}
 
-function dismissQuotaNotice(event) {
-    if (event) event.stopPropagation();
-    document.getElementById('quotaNotice').style.display = 'none';
-    fetch('/api/quota/ack', { method: 'POST' }).catch(() => {});
-    loadQuotaBadge();
-}
-
-// Check on init and every 15 minutes
-checkQuotaChanges();
-setInterval(checkQuotaChanges, 15 * 60 * 1000);
+setInterval(loadQuotaBadge, 15 * 60 * 1000);
 </script>
 </body>
 </html>

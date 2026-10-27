@@ -173,6 +173,8 @@ $env:DATA_DIR="D:\fundx-data"; python app.py
 ### 1. 构建并启动
 
 ```bash
+git clone https://github.com/mdsqeh/QDIIdash.git && cd QDIIdash
+
 # 数据目录（compose 里挂载的是相对路径 ./data，不存在会自动创建）
 mkdir -p data
 

@@ -401,28 +401,27 @@ def build_positions(conn, as_of=None):
 
     positions = []
     for asset in assets:
-        txs = txs_by_asset.get(asset['id'], [])
-        if not txs:
+        asset_txs = txs_by_asset.get(asset['id'], [])
+        if not asset_txs:
             continue
         price = latest_price(conn, asset['id'], as_of)
-        pos = compute_position(asset, txs, as_of, price=price, fx_fn=fx_fn)
-        currency = asset.get('currency') or 'CNY'
-        if currency != 'CNY' and fx_cache.get((currency, iso(as_of))) is None:
-            pos['fx_missing'] = True
-            pos['warnings'].append('缺少汇率，暂按 1:1 估值')
-        else:
-            pos['fx_missing'] = False
-        account_id = None
-        for tx in reversed(txs):
-            if tx.get('account_id'):
-                account_id = tx['account_id']
-                break
-        pos['account_id'] = account_id
-        pos['account_name'] = accounts.get(account_id, {}).get('name') if account_id else ''
-        pos['lot_size'] = asset.get('lot_size', 1)
-        pos['allow_fraction'] = bool(asset.get('allow_fraction', 1))
-        pos['quote_source'] = asset.get('quote_source')
-        positions.append(pos)
+        groups = {}
+        for tx in asset_txs:
+            groups.setdefault(tx.get('account_id'), []).append(tx)
+        for account_id, txs in groups.items():
+            pos = compute_position(asset, txs, as_of, price=price, fx_fn=fx_fn)
+            currency = asset.get('currency') or 'CNY'
+            if currency != 'CNY' and fx_cache.get((currency, iso(as_of))) is None:
+                pos['fx_missing'] = True
+                pos['warnings'].append('缺少汇率，暂按 1:1 估值')
+            else:
+                pos['fx_missing'] = False
+            pos['account_id'] = account_id
+            pos['account_name'] = accounts.get(account_id, {}).get('name') if account_id else ''
+            pos['lot_size'] = asset.get('lot_size', 1)
+            pos['allow_fraction'] = bool(asset.get('allow_fraction', 1))
+            pos['quote_source'] = asset.get('quote_source')
+            positions.append(pos)
 
     total = sum(p['market_value_cny'] for p in positions if p['has_position'])
     for p in positions:
@@ -459,10 +458,56 @@ def net_invested_cny(conn, as_of):
     return total
 
 
+def account_cash(conn, as_of=None):
+    """Latest cash balance per account, converted to CNY.
+
+    Returns ``(rows, total_cny)``; rows include ``account_name``/``currency``,
+    ``balance_date``/``amount``, ``cny_value`` and ``fx_missing``.
+    """
+    as_of = parse_date(as_of or datetime.now(SHANGHAI_TZ).date())
+    rows = conn.execute(
+        """SELECT b.account_id, a.name AS account_name, a.currency AS account_currency,
+                  b.balance_date, b.amount, b.currency
+           FROM wm_account_balance b
+           JOIN wm_account a ON a.id = b.account_id
+           WHERE b.balance_date <= ?
+             AND b.balance_date = (
+                 SELECT MAX(b2.balance_date) FROM wm_account_balance b2
+                 WHERE b2.account_id = b.account_id AND b2.balance_date <= ?
+             )
+           ORDER BY a.id""",
+        (iso(as_of), iso(as_of)),
+    ).fetchall()
+    result = []
+    total = 0.0
+    for row in rows:
+        currency = (row['currency'] or row['account_currency'] or 'CNY').upper()
+        rate = 1.0 if currency == 'CNY' else fx_rate(conn, currency, as_of)
+        fx_missing = currency != 'CNY' and rate is None
+        rate = rate or 1.0
+        amount = float(row['amount'] or 0)
+        cny_value = amount * rate
+        result.append({
+            'account_id': row['account_id'],
+            'account_name': row['account_name'],
+            'currency': currency,
+            'balance_date': row['balance_date'],
+            'amount': amount,
+            'fx_rate': rate,
+            'fx_missing': fx_missing,
+            'cny_value': cny_value,
+        })
+        total += cny_value
+    return result, total
+
+
 def build_summary(conn, as_of=None, range_days=365):
     as_of = parse_date(as_of or datetime.now(SHANGHAI_TZ).date())
     positions, total = build_positions(conn, as_of)
     held = [p for p in positions if p['has_position']]
+    cash_rows, cash_total = account_cash(conn, as_of)
+    securities_value = total
+    total_value = total + cash_total
     total_cost = sum(p['cost_cny'] for p in positions)
     total_pnl = sum(p['pnl_cny'] for p in positions)
     realized = sum(p['realized_cny'] for p in positions)
@@ -470,8 +515,8 @@ def build_summary(conn, as_of=None, range_days=365):
     invested = net_invested_cny(conn, as_of)
 
     flows = external_cash_flows(conn, as_of)
-    if total > 0:
-        flows.append((as_of, total))
+    if securities_value > 0:
+        flows.append((as_of, securities_value))
     mwr = xirr(flows)
 
     first_tx = conn.execute('SELECT MIN(trade_date) AS d FROM wm_transaction').fetchone()
@@ -492,9 +537,22 @@ def build_summary(conn, as_of=None, range_days=365):
         "SELECT COUNT(*) AS c FROM wm_dca_order WHERE status = 'failed'"
     ).fetchone()['c']
 
+    cash_allocations = [{
+        'asset_class': 'cash',
+        'market': 'CASH',
+        'currency': row['currency'],
+        'account_name': row['account_name'],
+        'market_value_cny': row['cny_value'],
+        'has_position': row['amount'] > 0,
+    } for row in cash_rows if row['amount'] > 0]
+    allocation_rows = held + cash_allocations
+
     return {
         'as_of': iso(as_of),
-        'total_value': round(total, 2),
+        'total_value': round(total_value, 2),
+        'securities_value': round(securities_value, 2),
+        'cash_value': round(cash_total, 2),
+        'cash_fx_missing': sum(1 for row in cash_rows if row['fx_missing']),
         'total_cost': round(total_cost, 2),
         'total_pnl': round(total_pnl, 2),
         'total_pnl_pct': (total_pnl / invested) if invested else None,
@@ -506,12 +564,12 @@ def build_summary(conn, as_of=None, range_days=365):
         'max_drawdown': max_dd,
         'position_count': len(held),
         'priced_count': sum(1 for p in held if p['priced']),
-        'unpriced': [p['symbol'] for p in held if not p['priced']],
+        'unpriced': sorted({p['symbol'] for p in held if not p['priced']}),
         'allocations': {
-            'asset_class': _allocation(held, 'asset_class'),
-            'market': _allocation(held, 'market'),
-            'currency': _allocation(held, 'currency'),
-            'account': _allocation(held, 'account_name'),
+            'asset_class': _allocation(allocation_rows, 'asset_class'),
+            'market': _allocation(allocation_rows, 'market'),
+            'currency': _allocation(allocation_rows, 'currency'),
+            'account': _allocation(allocation_rows, 'account_name'),
         },
         'first_tx_date': first_date,
         'last_sync': dict(last_sync) if last_sync else None,

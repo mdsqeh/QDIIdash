@@ -31,24 +31,24 @@
             <small id="mTotalSub">-</small>
         </div>
         <div class="metric">
-            <span class="metric-label">净投入</span>
+            <span class="metric-label">证券净投入</span>
             <strong id="mNet">-</strong>
-            <small>买入本金 − 赎回本金</small>
+            <small>买入本金 − 赎回本金（证券）</small>
         </div>
         <div class="metric">
-            <span class="metric-label">累计盈亏</span>
+            <span class="metric-label">证券累计盈亏</span>
             <strong id="mPnl">-</strong>
             <small id="mPnlSub">-</small>
         </div>
         <div class="metric">
-            <span class="metric-label">今日 / 最新交易日盈亏</span>
+            <span class="metric-label">证券今日 / 最新交易日盈亏</span>
             <strong id="mToday">-</strong>
-            <small>按最新价与上一交易日</small>
+            <small>按最新价与上一交易日（证券）</small>
         </div>
         <div class="metric">
-            <span class="metric-label">年化收益 XIRR</span>
+            <span class="metric-label">证券年化收益 XIRR</span>
             <strong id="mXirr">-</strong>
-            <small>含全部现金流</small>
+            <small>证券现金流口径，不含账户现金</small>
         </div>
     </section>
 
@@ -57,6 +57,7 @@
         <button class="tab" data-tab="holdings">持仓</button>
         <button class="tab" data-tab="dca">定投</button>
         <button class="tab" data-tab="transactions">交易</button>
+        <button class="tab" data-tab="accounts">账户</button>
         <button class="tab" data-tab="assets">资产</button>
         <button class="tab" data-tab="reports">报表</button>
     </nav>
@@ -77,7 +78,7 @@
             </div>
             <div class="card">
                 <div class="card-head">
-                    <h2>资产走势</h2>
+                    <h2>证券市值走势</h2>
                     <div class="range-btns" id="rangeBtns">
                         <button data-range="1m">1月</button>
                         <button data-range="3m">3月</button>
@@ -108,12 +109,13 @@
     <section class="panel" id="tab-holdings">
         <div class="toolbar">
             <button class="btn btn-primary" id="addTxFromHoldings" type="button">+ 记一笔</button>
+            <select id="holdingsAccountFilter" class="mini-select"></select>
             <span class="muted" id="holdingsHint"></span>
         </div>
         <div class="table-wrap">
             <table>
                 <thead><tr>
-                    <th>资产</th><th>市场</th><th class="num">数量 / 本金</th><th class="num">均价</th>
+                    <th>资产</th><th>账户</th><th>市场</th><th class="num">数量 / 本金</th><th class="num">均价</th>
                     <th class="num">现价</th><th class="num">市值 (CNY)</th><th class="num">累计盈亏</th>
                     <th class="num">最新日</th><th class="num">占比</th><th></th>
                 </tr></thead>
@@ -154,6 +156,7 @@
     <section class="panel" id="tab-transactions">
         <div class="toolbar toolbar-wrap">
             <select id="txAssetFilter" class="mini-select"></select>
+            <select id="txAccountFilter" class="mini-select"></select>
             <select id="txTypeFilter" class="mini-select">
                 <option value="">全部类型</option>
                 <option value="buy">买入</option>
@@ -184,6 +187,23 @@
         <div class="pager" id="txPager"></div>
     </section>
 
+    <section class="panel" id="tab-accounts">
+        <div class="toolbar">
+            <button class="btn btn-primary" id="addAccountBtn" type="button">+ 新建账户</button>
+            <span class="muted" id="accountsHint"></span>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead><tr>
+                    <th>账户</th><th>平台</th><th>币种</th><th class="num">现金</th>
+                    <th class="num">证券市值 (CNY)</th><th class="num">证券盈亏</th>
+                    <th class="num">交易</th><th class="num">计划</th><th>状态</th><th></th>
+                </tr></thead>
+                <tbody id="accountsBody"></tbody>
+            </table>
+        </div>
+    </section>
+
     <section class="panel" id="tab-assets">
         <div class="toolbar toolbar-wrap">
             <button class="btn btn-primary" id="addAssetBtn" type="button">+ 添加资产</button>
@@ -204,17 +224,17 @@
 
     <section class="panel" id="tab-reports">
         <div class="report-grid">
-            <div class="metric"><span class="metric-label">XIRR</span><strong id="rXirr">-</strong><small>资金加权年化</small></div>
-            <div class="metric"><span class="metric-label">TWR</span><strong id="rTwr">-</strong><small>时间加权，区间内</small></div>
-            <div class="metric"><span class="metric-label">最大回撤</span><strong id="rMdd">-</strong><small>区间内峰值回撤</small></div>
+            <div class="metric"><span class="metric-label">XIRR</span><strong id="rXirr">-</strong><small>证券资金加权年化</small></div>
+            <div class="metric"><span class="metric-label">TWR</span><strong id="rTwr">-</strong><small>证券时间加权，区间内</small></div>
+            <div class="metric"><span class="metric-label">最大回撤</span><strong id="rMdd">-</strong><small>证券区间峰值回撤</small></div>
             <div class="metric"><span class="metric-label">已实现盈亏</span><strong id="rRealized">-</strong><small>卖出 / 分红 / 利息</small></div>
         </div>
         <div class="card">
-            <div class="card-head"><h2>月度收益（剔除入金）</h2></div>
+            <div class="card-head"><h2>证券月度收益（剔除入金）</h2></div>
             <div class="chart chart-tall" id="monthlyChart"></div>
         </div>
         <div class="card muted-card">
-            <p>说明：TWR / 最大回撤基于当前所选区间的每日估值；XIRR 使用全部现金流与当前市值。定投计划页的收益按该计划买入的份额估算，不扣除计划外的卖出。</p>
+            <p>说明：TWR / 最大回撤基于当前所选区间的每日证券估值；XIRR 使用证券现金流与当前证券市值。账户现金余额计入总资产，但不计入 XIRR/TWR。定投计划页的收益按该计划买入的份额估算，不扣除计划外的卖出。</p>
         </div>
     </section>
 </div>

@@ -58,14 +58,22 @@ class WealthTestBase(unittest.TestCase):
         self.conn.commit()
 
     def add_tx(self, asset_id, type_, day, units=0, price=0, amount=0, fee=0,
-               currency='CNY', fx_rate=1.0, split_ratio=None):
+               currency='CNY', fx_rate=1.0, split_ratio=None, account_id=None):
         cur = self.conn.execute(
             """INSERT INTO wm_transaction
-               (asset_id, type, trade_date, units, price, amount, fee, currency,
+               (asset_id, account_id, type, trade_date, units, price, amount, fee, currency,
                 fx_rate, split_ratio, source, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?)""",
-            (asset_id, type_, day, units, price, amount, fee, currency,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?)""",
+            (asset_id, account_id, type_, day, units, price, amount, fee, currency,
              fx_rate, split_ratio, now_iso()),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def add_account(self, name, currency='CNY', broker=None):
+        cur = self.conn.execute(
+            'INSERT INTO wm_account (name, broker, currency, created_at) VALUES (?, ?, ?, ?)',
+            (name, broker, currency, now_iso()),
         )
         self.conn.commit()
         return cur.lastrowid
@@ -134,6 +142,50 @@ class MathsTests(WealthTestBase):
         ])
         self.assertIsNotNone(result)
         self.assertAlmostEqual(result, 0.10, places=6)
+
+    def test_positions_split_by_account(self):
+        asset_id = self.add_asset()
+        account_a = self.add_account('账户A')
+        account_b = self.add_account('账户B')
+        self.add_tx(asset_id, 'buy', '2026-01-02', units=10, price=10,
+                    amount=100, account_id=account_a)
+        self.add_tx(asset_id, 'buy', '2026-01-03', units=5, price=20,
+                    amount=100, account_id=account_b)
+        self.add_price(asset_id, '2026-01-05', 30)
+        positions, total = portfolio.build_positions(self.conn, '2026-01-05')
+        self.assertEqual(len(positions), 2)
+        by_account = {p['account_name']: p for p in positions}
+        self.assertAlmostEqual(by_account['账户A']['units'], 10.0)
+        self.assertAlmostEqual(by_account['账户A']['pnl_cny'], 200.0)
+        self.assertAlmostEqual(by_account['账户B']['units'], 5.0)
+        self.assertAlmostEqual(by_account['账户B']['pnl_cny'], 50.0)
+        self.assertAlmostEqual(total, 450.0)
+
+    def test_account_cash_is_included_in_total_assets(self):
+        account_id = self.add_account('美元现金', currency='USD')
+        today = datetime.now(SHANGHAI_TZ).date().isoformat()
+        self.conn.execute(
+            """INSERT INTO wm_account_balance
+               (account_id, balance_date, amount, currency, source, created_at)
+               VALUES (?, ?, ?, 'USD', 'test', ?)""",
+            (account_id, today, 100, now_iso()),
+        )
+        self.conn.execute(
+            """INSERT INTO wm_fx_rate (rate_date, currency, cny_rate, source)
+               VALUES (?, 'USD', 7.0, 'test')""",
+            (today,),
+        )
+        self.conn.commit()
+        cash_rows, cash_total = portfolio.account_cash(self.conn, today)
+        self.assertAlmostEqual(cash_total, 700.0)
+        self.assertEqual(cash_rows[0]['account_name'], '美元现金')
+        summary = portfolio.build_summary(self.conn, today)
+        self.assertAlmostEqual(summary['securities_value'], 0.0)
+        self.assertAlmostEqual(summary['cash_value'], 700.0)
+        self.assertAlmostEqual(summary['total_value'], 700.0)
+        cash_alloc = [a for a in summary['allocations']['asset_class'] if a['name'] == 'cash']
+        self.assertEqual(len(cash_alloc), 1)
+        self.assertAlmostEqual(cash_alloc[0]['value'], 700.0)
 
     def test_moving_average_and_realized(self):
         asset_id = self.add_asset()
@@ -459,6 +511,53 @@ class ImportAndParsingTests(WealthTestBase):
                 'symbol': '000045', 'market': 'FUND_CN', 'asset_class': 'fund',
                 'name': '美元基金', 'currency': 'USD', 'quote_source': 'fund_em',
             })
+
+    def test_ghostfolio_top_level_asset_profiles(self):
+        from wealth.routes import _ghostfolio_rows
+        payload = {
+            'assetProfiles': [{
+                'symbol': 'AAPL', 'name': 'Apple Inc.', 'assetClass': 'EQUITY',
+                'currency': 'USD', 'dataSource': 'YAHOO',
+            }],
+            'activities': [
+                {'type': 'BUY', 'date': '2026-01-02', 'symbol': 'AAPL',
+                 'currency': 'USD', 'quantity': 1, 'unitPrice': 100,
+                 'dataSource': 'YAHOO'},
+                {'type': 'BUY', 'date': '2026-01-02', 'symbol': 'GF_000044',
+                 'currency': 'USD', 'quantity': 1, 'unitPrice': 5,
+                 'dataSource': 'MANUAL'},
+            ],
+        }
+        _, rows = _ghostfolio_rows(payload)
+        self.assertEqual(rows[0]['name'], 'Apple Inc.')
+        self.assertEqual(rows[0]['asset_class'], 'stock')
+        self.assertEqual(rows[0]['market'], 'US')
+        self.assertEqual(rows[1]['asset_class'], 'fund')
+        self.assertEqual(rows[1]['market'], 'MANUAL')
+
+    def test_ghostfolio_prepare_metadata(self):
+        from wealth.routes import _prepare_import
+        asset_id = self.add_asset(symbol='AAPL', market='US', asset_class='other',
+                                  currency='USD', name='AAPL')
+        payload = {
+            'accounts': [],
+            'assetProfiles': [{
+                'symbol': 'AAPL', 'name': 'Apple Inc.', 'assetClass': 'EQUITY',
+                'currency': 'USD', 'dataSource': 'YAHOO',
+            }],
+            'activities': [{
+                'type': 'BUY', 'date': '2026-01-02', 'symbol': 'AAPL',
+                'currency': 'USD', 'quantity': 1, 'unitPrice': 100,
+                'dataSource': 'YAHOO',
+            }],
+        }
+        prepared = _prepare_import(self.conn, payload, dry_run=True)
+        meta = prepared['metadata'][('AAPL', 'US')]
+        self.assertEqual(meta['name'], 'Apple Inc.')
+        self.assertEqual(meta['asset_class'], 'stock')
+        self.assertEqual(len(prepared['rows']), 1)
+        self.assertEqual(asset_id, self.conn.execute(
+            "SELECT id FROM wm_asset WHERE symbol='AAPL'").fetchone()['id'])
 
     def test_ghostfolio_market_guess(self):
         from wealth.routes import _guess_market, _create_asset_record

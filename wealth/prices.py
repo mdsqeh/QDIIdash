@@ -323,7 +323,7 @@ def sync_asset(conn, asset, full=False, start=None):
     asset_id = asset['id']
     if source == 'fund_em':
         name, rows = fund_nav(asset['symbol'])
-        if name and not asset.get('name'):
+        if name and (not asset.get('name') or asset.get('name') == asset.get('symbol')):
             conn.execute('UPDATE wm_asset SET name = ? WHERE id = ?', (name, asset_id))
         prev = conn.execute(
             'SELECT close FROM wm_price WHERE asset_id = ? ORDER BY price_date DESC LIMIT 1',
@@ -415,8 +415,11 @@ def sync_asset(conn, asset, full=False, start=None):
         # Refresh the name and use the quote when the daily bar is not published yet.
         quote = eastmoney_quote(key)
         if quote.get('name'):
-            conn.execute('UPDATE wm_asset SET name = ? WHERE id = ? AND (name IS NULL OR name = "")',
-                         (quote['name'], asset_id))
+            conn.execute(
+                """UPDATE wm_asset SET name = ? WHERE id = ?
+                   AND (name IS NULL OR name = '' OR name = ?)""",
+                (quote['name'], asset_id, asset['symbol']),
+            )
         last = conn.execute(
             'SELECT price_date, close FROM wm_price WHERE asset_id = ? ORDER BY price_date DESC LIMIT 1',
             (asset_id,),

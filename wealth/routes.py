@@ -16,7 +16,7 @@ from werkzeug.exceptions import HTTPException
 
 from . import dca, prices
 from .db import DB_PATH, SHANGHAI_TZ, close_db, connect, get_db, iso, now_iso, today_str
-from .portfolio import (build_history, build_positions, build_summary, parse_date)
+from .portfolio import (account_cash, build_history, build_positions, build_summary, parse_date)
 from .schema import init_wealth_db
 
 wealth_bp = Blueprint('wealth', __name__)
@@ -278,12 +278,17 @@ def _lookup_name(conn, market, symbol):
     return ''
 
 
-def _units_before(conn, asset_id, on_date, exclude_id=None):
+def _units_before(conn, asset_id, on_date, exclude_id=None, account_id=None):
     sql = "SELECT type, units, split_ratio FROM wm_transaction WHERE asset_id = ? AND trade_date <= ?"
     params = [asset_id, iso(on_date)]
     if exclude_id:
         sql += ' AND id != ?'
         params.append(exclude_id)
+    if account_id is None:
+        sql += ' AND account_id IS NULL'
+    else:
+        sql += ' AND account_id = ?'
+        params.append(account_id)
     sql += ' ORDER BY trade_date, id'
     units = 0.0
     for r in conn.execute(sql, params).fetchall():
@@ -296,12 +301,17 @@ def _units_before(conn, asset_id, on_date, exclude_id=None):
     return units
 
 
-def _principal_before(conn, asset_id, on_date, exclude_id=None):
+def _principal_before(conn, asset_id, on_date, exclude_id=None, account_id=None):
     sql = "SELECT type, amount FROM wm_transaction WHERE asset_id = ? AND trade_date <= ?"
     params = [asset_id, iso(on_date)]
     if exclude_id:
         sql += ' AND id != ?'
         params.append(exclude_id)
+    if account_id is None:
+        sql += ' AND account_id IS NULL'
+    else:
+        sql += ' AND account_id = ?'
+        params.append(account_id)
     sql += ' ORDER BY trade_date, id'
     principal = 0.0
     for r in conn.execute(sql, params).fetchall():
@@ -366,9 +376,9 @@ def _create_transaction(conn, data, source='manual', import_hash=None):
 
     if tx_type == 'sell':
         if asset.get('valuation_mode') == 'accrual':
-            held = _principal_before(conn, asset['id'], trade_date)
+            held = _principal_before(conn, asset['id'], trade_date, account_id=account_id)
         else:
-            held = _units_before(conn, asset['id'], trade_date)
+            held = _units_before(conn, asset['id'], trade_date, account_id=account_id)
         if units > held + 1e-6:
             raise ValueError(f'卖出数量超过当前持仓（{held:g}）')
 
@@ -702,16 +712,37 @@ def api_asset_backfill(asset_id):
 def api_accounts():
     conn = get_db()
     if request.method == 'GET':
-        rows = conn.execute('SELECT * FROM wm_account ORDER BY is_active DESC, id').fetchall()
-        return jsonify([dict(r) for r in rows])
+        rows = conn.execute(
+            """SELECT a.*,
+                      (SELECT COUNT(*) FROM wm_transaction t WHERE t.account_id = a.id) AS tx_count,
+                      (SELECT COUNT(*) FROM wm_dca_plan p WHERE p.account_id = a.id) AS plan_count
+               FROM wm_account a ORDER BY a.is_active DESC, a.id"""
+        ).fetchall()
+        cash_rows, _ = account_cash(conn)
+        cash_by_account = {r['account_id']: r for r in cash_rows}
+        result = []
+        for row in rows:
+            item = dict(row)
+            cash = cash_by_account.get(row['id'])
+            item['cash_amount'] = cash['amount'] if cash else 0.0
+            item['cash_cny'] = round(cash['cny_value'], 2) if cash else 0.0
+            item['cash_currency'] = cash['currency'] if cash else (row['currency'] or 'CNY')
+            item['cash_date'] = cash['balance_date'] if cash else None
+            item['cash_fx_missing'] = bool(cash['fx_missing']) if cash else False
+            result.append(item)
+        return jsonify(result)
     data = _body()
-    name = (data.get('name') or '').strip()
+    name = str(data.get('name') or '').strip()
     if not name:
         return _error('账户名称不能为空')
+    currency = str(data.get('currency') or 'CNY').upper()
+    if len(currency) != 3 or not currency.isalpha():
+        return _error('账户币种应为 3 位字母代码')
+    broker = str(data.get('broker') or '').strip() or None
     try:
         cur = conn.execute(
             'INSERT INTO wm_account (name, broker, currency, created_at) VALUES (?, ?, ?, ?)',
-            (name, data.get('broker'), (data.get('currency') or 'CNY').upper(), now_iso()),
+            (name, broker, currency, now_iso()),
         )
         conn.commit()
         return jsonify(dict(conn.execute('SELECT * FROM wm_account WHERE id=?', (cur.lastrowid,)).fetchone())), 201
@@ -722,6 +753,9 @@ def api_accounts():
 @wealth_bp.route('/api/wm/accounts/<int:account_id>', methods=['PUT', 'DELETE'])
 def api_account(account_id):
     conn = get_db()
+    account = conn.execute('SELECT * FROM wm_account WHERE id = ?', (account_id,)).fetchone()
+    if not account:
+        return _error('账户不存在', 404)
     if request.method == 'DELETE':
         used = conn.execute(
             'SELECT COUNT(*) AS c FROM wm_transaction WHERE account_id = ?', (account_id,)
@@ -731,18 +765,37 @@ def api_account(account_id):
         ).fetchone()['c']
         if used or plans:
             return _error('账户已有交易或定投计划，不能删除', 409)
+        conn.execute('DELETE FROM wm_account_balance WHERE account_id = ?', (account_id,))
         conn.execute('DELETE FROM wm_account WHERE id = ?', (account_id,))
         conn.commit()
         return jsonify({'ok': True})
     data = _body()
-    conn.execute(
-        'UPDATE wm_account SET name=?, broker=?, currency=?, is_active=? WHERE id=?',
-        ((data.get('name') or '').strip() or '未命名账户', data.get('broker'),
-         (data.get('currency') or 'CNY').upper(), 1 if data.get('is_active', True) else 0,
-         account_id),
-    )
-    conn.commit()
-    return jsonify(dict(conn.execute('SELECT * FROM wm_account WHERE id=?', (account_id,)).fetchone()))
+    name = str(data.get('name', account['name']) or '').strip()
+    if not name:
+        return _error('账户名称不能为空')
+    currency = str(data.get('currency', account['currency']) or 'CNY').upper()
+    if len(currency) != 3 or not currency.isalpha():
+        return _error('账户币种应为 3 位字母代码')
+    broker = data.get('broker', account['broker'])
+    if broker is not None:
+        broker = str(broker).strip() or None
+    is_active = 1 if _flag(data.get('is_active', account['is_active']),
+                           bool(account['is_active'])) else 0
+    try:
+        conn.execute(
+            'UPDATE wm_account SET name=?, broker=?, currency=?, is_active=? WHERE id=?',
+            (name, broker, currency, is_active, account_id),
+        )
+        if currency != (account['currency'] or 'CNY').upper():
+            conn.execute(
+                'UPDATE wm_account_balance SET currency = ? WHERE account_id = ?',
+                (currency, account_id),
+            )
+        conn.commit()
+        return jsonify(dict(conn.execute('SELECT * FROM wm_account WHERE id=?', (account_id,)).fetchone()))
+    except Exception as exc:
+        conn.rollback()
+        return _error(f'账户名称已存在或无效: {exc}')
 
 
 # ── transactions ──────────────────────────────────────────────────
@@ -756,6 +809,12 @@ def api_transactions():
         if asset_id:
             conditions.append('t.asset_id = ?')
             params.append(asset_id)
+        account_arg = request.args.get('account_id')
+        if account_arg == 'none':
+            conditions.append('t.account_id IS NULL')
+        elif account_arg:
+            conditions.append('t.account_id = ?')
+            params.append(int(account_arg))
         tx_type = request.args.get('type')
         if tx_type:
             conditions.append('t.type = ?')
@@ -1222,17 +1281,31 @@ def _ghostfolio_rows(payload):
     if isinstance(payload, list):
         activities = payload
         accounts = []
+        asset_profiles = {}
     else:
         activities = payload.get('activities') or payload.get('data') or []
         accounts = payload.get('accounts') or []
+        asset_profiles = {}
+        for item in payload.get('assetProfiles') or []:
+            profile_symbol = str(item.get('symbol') or '').strip().upper()
+            profile_source = str(item.get('dataSource') or '').strip().upper()
+            if profile_symbol:
+                asset_profiles[(profile_symbol, profile_source)] = item
+                asset_profiles.setdefault((profile_symbol, ''), item)
     rows = []
     for activity in activities:
+        symbol = str(activity.get('symbol') or '').strip()
+        data_source = activity.get('dataSource') or ''
+        activity_currency = (activity.get('currency') or '').upper()
         profile = activity.get('assetProfile') or {}
-        symbol = str(activity.get('symbol') or profile.get('symbol') or '').strip()
+        if not profile and symbol:
+            profile = (asset_profiles.get((symbol.upper(), str(data_source).upper()))
+                       or asset_profiles.get((symbol.upper(), '')) or {})
+        if not symbol:
+            symbol = str(profile.get('symbol') or '').strip()
         if not symbol:
             continue
         data_source = activity.get('dataSource') or profile.get('dataSource') or ''
-        activity_currency = (activity.get('currency') or '').upper()
         profile_currency = (profile.get('currency') or '').upper()
         if activity_currency and profile_currency and activity_currency != profile_currency:
             rows.append({
@@ -1274,10 +1347,14 @@ def _ghostfolio_rows(payload):
                'CRYPTO': 'crypto', 'FIXED_INCOME': 'fund'}.get(asset_class, 'other')
         if market == 'CRYPTO':
             cls = 'crypto'
-        if market == 'FUND_CN':
+        elif market == 'FUND_CN':
             cls = 'fund'
-        if market == 'CN' and cls == 'other':
+        elif market == 'CN' and cls == 'other':
+            cls = 'etf' if symbol[:1] in ('5', '1') else 'stock'
+        elif market in ('US', 'HK') and cls == 'other':
             cls = 'stock'
+        elif market == 'MANUAL' and cls == 'other':
+            cls = 'fund' if symbol.upper().startswith('GF_') else 'other'
         rows.append({
             'market': market, 'symbol': symbol, 'currency': currency, 'name': name,
             'asset_class': cls, 'type': mapped, 'trade_date': date_value,
@@ -1360,6 +1437,7 @@ def _prepare_import(conn, payload, dry_run=True):
     existing_accounts = {r['name']: r['id'] for r in conn.execute('SELECT id, name FROM wm_account').fetchall()}
 
     new_assets = {}
+    metadata = {}
     prepared = []
     skipped = duplicates = 0
     errors = []
@@ -1386,6 +1464,16 @@ def _prepare_import(conn, payload, dry_run=True):
             errors.append(f'{row["symbol"]}: {row["market"]} 资产币种应为 '
                           f'{"/".join(sorted(allowed))}，收到 {row["currency"]}')
             continue
+        row_name = row.get('name') or row['symbol']
+        row_class = row.get('asset_class') or 'other'
+        previous_meta = metadata.get(key)
+        if previous_meta is None:
+            metadata[key] = {'name': row_name, 'asset_class': row_class}
+        else:
+            if previous_meta['name'] == row['symbol'] and row_name != row['symbol']:
+                previous_meta['name'] = row_name
+            if previous_meta['asset_class'] == 'other' and row_class != 'other':
+                previous_meta['asset_class'] = row_class
         row_hash = _import_hash(row)
         if row_hash in existing_hashes:
             duplicates += 1
@@ -1406,6 +1494,7 @@ def _prepare_import(conn, payload, dry_run=True):
         'existing_accounts': existing_accounts,
         'rows': prepared,
         'new_assets': list(new_assets.values()),
+        'metadata': metadata,
         'duplicates': duplicates,
         'skipped': skipped,
         'errors': errors,
@@ -1454,6 +1543,7 @@ def api_import_ghostfolio():
                 'skipped': prepared['skipped'],
                 'errors': prepared['errors'][:50],
                 'accounts': len(prepared['accounts']),
+                'balances': sum(len(a.get('balances') or []) for a in prepared['accounts']),
                 'sample': prepared['rows'][:10],
             })
 
@@ -1461,6 +1551,22 @@ def api_import_ghostfolio():
         # slow/unreachable FX provider from making the import appear hung (and
         # from holding the SQLite write lock while waiting on the network).
         fx_map, fx_failed, fx_warnings = _resolve_import_fx(conn, prepared['rows'])
+        account_currencies = {
+            str(account.get('currency') or 'CNY').upper()
+            for account in prepared['accounts']
+        }
+        account_currencies.discard('CNY')
+        account_currencies = {
+            currency for currency in account_currencies
+            if prices.fx_rate(conn, currency, today_str()) is None
+        }
+        if account_currencies:
+            try:
+                prices.ensure_fx_range(
+                    conn, account_currencies,
+                    parse_date(today_str()) - timedelta(days=7), today_str(), timeout=10)
+            except Exception:
+                pass
         conn.commit()
 
         # Create accounts referenced by the file when they are new.
@@ -1482,6 +1588,32 @@ def api_import_ghostfolio():
             if name:
                 account_id_by_ghost[str(account.get('id'))] = prepared['existing_accounts'].get(name)
 
+        balance_count = 0
+        for account in prepared['accounts']:
+            local_id = account_id_by_ghost.get(str(account.get('id')))
+            if not local_id:
+                continue
+            currency = (account.get('currency') or 'CNY').upper()
+            for balance in account.get('balances') or []:
+                if balance.get('value') in (None, ''):
+                    continue
+                try:
+                    balance_date = iso(parse_date(str(balance.get('date') or '')[:10]))
+                except (TypeError, ValueError):
+                    continue
+                conn.execute(
+                    """INSERT INTO wm_account_balance
+                       (account_id, balance_date, amount, currency, source, created_at)
+                       VALUES (?, ?, ?, ?, 'ghostfolio', ?)
+                       ON CONFLICT(account_id, balance_date) DO UPDATE SET
+                         amount = excluded.amount,
+                         currency = excluded.currency,
+                         source = excluded.source""",
+                    (local_id, balance_date, _num(balance.get('value'), 0),
+                     currency, now_iso()),
+                )
+                balance_count += 1
+
         created_assets = []
         asset_map = {(r['symbol'], r['market']): dict(r) for r in conn.execute(
             'SELECT * FROM wm_asset').fetchall()}
@@ -1494,6 +1626,26 @@ def api_import_ghostfolio():
             asset_map[(asset['symbol'], asset['market'])] = asset
             if created:
                 created_assets.append(asset['id'])
+
+        metadata_updated = 0
+        for key, meta in prepared.get('metadata', {}).items():
+            asset = asset_map.get(key)
+            if not asset:
+                continue
+            name = meta.get('name')
+            asset_class = meta.get('asset_class')
+            updates, params = [], []
+            if asset_class and asset_class != 'other' and asset.get('asset_class') == 'other':
+                updates.append('asset_class = ?')
+                params.append(asset_class)
+            if (name and name != asset['symbol']
+                    and (not asset.get('name') or asset['name'] == asset['symbol'])):
+                updates.append('name = ?')
+                params.append(name)
+            if updates:
+                params.append(asset['id'])
+                conn.execute(f'UPDATE wm_asset SET {", ".join(updates)} WHERE id = ?', params)
+                metadata_updated += 1
 
         imported = 0
         for row in prepared['rows']:
@@ -1534,6 +1686,7 @@ def api_import_ghostfolio():
         return jsonify({
             'dry_run': False, 'imported': imported, 'duplicates': prepared['duplicates'],
             'skipped': prepared['skipped'], 'new_assets': len(created_assets),
+            'balances': balance_count, 'metadata_updated': metadata_updated,
             'errors': prepared['errors'][:50], 'warnings': fx_warnings[:50],
         })
     except Exception as exc:
@@ -1649,7 +1802,8 @@ def api_export():
                         headers={'Content-Disposition': 'attachment; filename=wealth-transactions.csv'})
 
     payload = {'exported_at': now_iso(), 'version': 1}
-    for table in ('wm_account', 'wm_asset', 'wm_transaction', 'wm_dca_plan', 'wm_dca_order'):
+    for table in ('wm_account', 'wm_account_balance', 'wm_asset', 'wm_transaction',
+                  'wm_dca_plan', 'wm_dca_order'):
         payload[table] = [dict(r) for r in conn.execute(f'SELECT * FROM {table}').fetchall()]
     return Response(json.dumps(payload, ensure_ascii=False, indent=2),
                     mimetype='application/json',

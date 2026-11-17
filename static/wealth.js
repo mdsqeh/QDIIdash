@@ -7,11 +7,11 @@ const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
 const MARKET_LABELS = {
     CN: 'A股', US: '美股', HK: '港股', FUND_CN: '场外基金',
-    CRYPTO: '加密货币', BANK: '银行理财', MANUAL: '手动资产',
+    CRYPTO: '加密货币', BANK: '银行理财', MANUAL: '手动资产', CASH: '现金',
 };
 const CLASS_LABELS = {
     stock: '股票', etf: '场内基金', fund: '基金', crypto: '加密货币',
-    bank_wm: '银行理财', other: '其他',
+    bank_wm: '银行理财', other: '其他', cash: '现金',
 };
 const TYPE_LABELS = {
     buy: '买入', sell: '卖出', dividend: '分红', reinvest: '分红再投',
@@ -229,6 +229,7 @@ async function loadTransactions(page = 1) {
     try {
         const params = new URLSearchParams({ page: String(page), per_page: '100' });
         if ($('#txAssetFilter')?.value) params.set('asset_id', $('#txAssetFilter').value);
+        if ($('#txAccountFilter')?.value) params.set('account_id', $('#txAccountFilter').value);
         if ($('#txTypeFilter')?.value) params.set('type', $('#txTypeFilter').value);
         if ($('#txStart')?.value) params.set('start', $('#txStart').value);
         if ($('#txEnd')?.value) params.set('end', $('#txEnd').value);
@@ -246,7 +247,9 @@ async function loadTransactions(page = 1) {
 function renderAll() {
     renderMetrics();
     renderAssetFilters();
+    renderAccountFilters();
     renderHoldings();
+    renderAccounts();
     renderPlans();
     renderOrders();
     renderAssets();
@@ -262,14 +265,18 @@ function renderMetrics() {
     $('#asOf').textContent = s.as_of || '-';
     $('#mTotal').textContent = fmtMoney(s.total_value);
     const fxMissing = state.positions.filter(p => p.fx_missing).length;
-    $('#mTotalSub').textContent = `${s.position_count || 0} 个持仓 · ${s.priced_count || 0} 个有价格` +
-        (s.unpriced?.length ? ` · ${s.unpriced.length} 个缺价` : '') +
-        (fxMissing ? ` · ${fxMissing} 个缺汇率` : '');
+    const sub = [`证券 ${fmtMoney(s.securities_value)}`];
+    if (Number(s.cash_value || 0) !== 0) sub.push(`现金 ${fmtMoney(s.cash_value)}`);
+    sub.push(`${s.position_count || 0} 个持仓`);
+    if (s.unpriced?.length) sub.push(`${s.unpriced.length} 个缺价`);
+    if (fxMissing) sub.push(`${fxMissing} 个持仓缺汇率`);
+    if (Number(s.cash_fx_missing || 0)) sub.push(`${s.cash_fx_missing} 个账户现金缺汇率`);
+    $('#mTotalSub').textContent = sub.join(' · ');
     $('#mNet').textContent = fmtMoney(s.net_invested);
     $('#mPnl').textContent = fmtMoney(s.total_pnl);
     $('#mPnl').className = pnlClass(s.total_pnl);
     $('#mPnlSub').textContent = s.total_pnl_pct === null || s.total_pnl_pct === undefined
-        ? '按净投入计算' : fmtSignedPct(s.total_pnl_pct) + ' / 净投入';
+        ? '证券成本口径' : fmtSignedPct(s.total_pnl_pct) + ' / 证券净投入';
     $('#mToday').textContent = fmtMoney(s.today_pnl);
     $('#mToday').className = pnlClass(s.today_pnl);
     $('#mXirr').textContent = fmtXirr(s.xirr);
@@ -287,14 +294,36 @@ function renderAssetFilters() {
     }
 }
 
+function fillAccountFilter(select) {
+    if (!select) return;
+    const current = select.value;
+    const options = state.accounts.map(a =>
+        `<option value="${a.id}">${esc(a.name)}${a.is_active ? '' : '（停用）'}</option>`);
+    select.innerHTML = '<option value="">全部账户</option>' + options.join('') +
+        '<option value="none">无账户</option>';
+    if (current) select.value = current;
+}
+
+function renderAccountFilters() {
+    fillAccountFilter($('#txAccountFilter'));
+    fillAccountFilter($('#holdingsAccountFilter'));
+}
+
 function renderHoldings() {
     const body = $('#holdingsBody');
-    const rows = state.positions.filter(p => p.has_position);
+    const accountFilter = $('#holdingsAccountFilter')?.value || '';
+    let rows = state.positions.filter(p => p.has_position);
+    if (accountFilter) {
+        rows = rows.filter(p => accountFilter === 'none'
+            ? !p.account_id
+            : String(p.account_id) === accountFilter);
+    }
+    const viewTotal = rows.reduce((sum, p) => sum + (Number(p.market_value_cny) || 0), 0);
     $('#holdingsHint').textContent = rows.length
-        ? `${rows.length} 个持仓，合计 ${fmtMoney(state.summary?.total_value)}`
+        ? `${rows.length} 个持仓，合计 ${fmtMoney(viewTotal)}`
         : '';
     if (!rows.length) {
-        body.innerHTML = '<tr><td colspan="10"><div class="empty">还没有持仓。先添加资产，再记一笔买入。</div></td></tr>';
+        body.innerHTML = '<tr><td colspan="11"><div class="empty">还没有持仓。先添加资产，再记一笔买入。</div></td></tr>';
         return;
     }
     body.innerHTML = rows.map(p => {
@@ -306,6 +335,7 @@ function renderHoldings() {
         const priceSub = bank ? '按日计提' : (p.price_date ? `<span class="muted">${esc(p.price_date)}</span>` : '<span class="neg">缺价格</span>');
         return `<tr>
             <td><div class="asset-cell"><span class="name">${esc(p.name)}</span><span class="code">${esc(p.symbol)}</span></div><div class="muted" style="font-size:.68rem">${sub}</div></td>
+            <td>${esc(p.account_name || '无账户')}</td>
             <td>${esc(MARKET_LABELS[p.market] || p.market)}</td>
             <td class="num">${bank ? fmtMoney(p.principal) : fmtNum(p.units, 4)}</td>
             <td class="num">${bank ? '—' : fmtNum(p.avg_cost_native, 4)}</td>
@@ -321,6 +351,70 @@ function renderHoldings() {
             </div></td>
         </tr>`;
     }).join('');
+}
+
+function renderAccounts() {
+    const body = $('#accountsBody');
+    if (!body) return;
+    const agg = new Map();
+    for (const p of state.positions) {
+        if (!p.has_position) continue;
+        const key = p.account_id == null ? 'none' : String(p.account_id);
+        const cur = agg.get(key) || { securities: 0, cost: 0, pnl: 0, count: 0 };
+        cur.securities += Number(p.market_value_cny) || 0;
+        cur.cost += Number(p.cost_cny) || 0;
+        cur.pnl += Number(p.pnl_cny) || 0;
+        cur.count += 1;
+        agg.set(key, cur);
+    }
+    const rows = state.accounts.map(a => {
+        const stats = agg.get(String(a.id)) || { securities: 0, pnl: 0, count: 0 };
+        const cash = Number(a.cash_amount) || 0;
+        const cashCny = Number(a.cash_cny) || 0;
+        const canDelete = !a.tx_count && !a.plan_count;
+        const cashText = a.cash_date
+            ? `${fmtCcy(cash, a.cash_currency || a.currency || 'CNY')}`
+              + ((a.cash_currency || a.currency) !== 'CNY' ? `<div class="muted" style="font-size:.66rem">≈ ${fmtMoney(cashCny)}</div>` : '')
+              + (a.cash_date ? `<div class="muted" style="font-size:.64rem">${esc(a.cash_date)}</div>` : '')
+              + (a.cash_fx_missing ? '<div class="neg" style="font-size:.66rem">缺汇率</div>' : '')
+            : '—';
+        return `<tr>
+            <td><div class="asset-cell"><span class="name">${esc(a.name)}</span><span class="code">${a.tx_count || 0} 笔交易 · ${a.plan_count || 0} 个计划</span></div></td>
+            <td>${esc(a.broker || '—')}</td>
+            <td>${esc(a.currency || 'CNY')}</td>
+            <td class="num">${cashText}</td>
+            <td class="num">${fmtMoney(stats.securities)}</td>
+            <td class="num ${pnlClass(stats.pnl)}">${fmtMoney(stats.pnl)}</td>
+            <td class="num">${a.tx_count || 0}</td>
+            <td class="num">${a.plan_count || 0}</td>
+            <td>${a.is_active ? '<span class="tag tag-filled">启用</span>' : '<span class="tag tag-skipped">停用</span>'}</td>
+            <td><div class="row-actions">
+                <button class="btn btn-ghost btn-sm" data-action="edit-account" data-account="${a.id}">编辑</button>
+                <button class="btn btn-ghost btn-sm" data-action="toggle-account" data-account="${a.id}" data-active="${a.is_active ? 1 : 0}">${a.is_active ? '停用' : '启用'}</button>
+                <button class="btn btn-ghost btn-sm" data-action="account-transactions" data-account="${a.id}">交易</button>
+                ${canDelete ? `<button class="btn btn-danger btn-sm" data-action="delete-account" data-account="${a.id}">删除</button>` : ''}
+            </div></td>
+        </tr>`;
+    });
+    const unassigned = agg.get('none');
+    if (unassigned) {
+        rows.push(`<tr>
+            <td><div class="asset-cell"><span class="name">无账户</span><span class="code">未指定投资账户的交易</span></div></td>
+            <td>—</td><td>CNY</td><td class="num">—</td>
+            <td class="num">${fmtMoney(unassigned.securities)}</td>
+            <td class="num ${pnlClass(unassigned.pnl)}">${fmtMoney(unassigned.pnl)}</td>
+            <td class="num">—</td><td class="num">—</td><td>—</td>
+            <td><div class="row-actions"><button class="btn btn-ghost btn-sm" data-action="account-transactions" data-account="none">交易</button></div></td>
+        </tr>`);
+    }
+    body.innerHTML = rows.length
+        ? rows.join('')
+        : '<tr><td colspan="10"><div class="empty">还没有账户。</div></td></tr>';
+    const totalCash = state.accounts.reduce((sum, a) => sum + (Number(a.cash_cny) || 0), 0);
+    const totalSec = Array.from(agg.values()).reduce((sum, a) => sum + a.securities, 0);
+    const active = state.accounts.filter(a => a.is_active).length;
+    $('#accountsHint').textContent =
+        `${state.accounts.length} 个账户（${active} 个启用） · 现金 ${fmtMoney(totalCash)} · 证券 ${fmtMoney(totalSec)}`;
 }
 
 function frequencyText(plan) {
@@ -347,7 +441,7 @@ function renderPlans() {
             <div class="plan-top">
                 <div>
                     <h3>${esc(plan.name)}</h3>
-                    <div class="plan-sub">${esc(plan.asset_name || '')} · ${esc(plan.symbol || '')} · ${frequencyText(plan)}</div>
+                    <div class="plan-sub">${esc(plan.asset_name || '')} · ${esc(plan.symbol || '')}${plan.account_name ? ' · ' + esc(plan.account_name) : ''} · ${frequencyText(plan)}</div>
                 </div>
                 <span class="tag ${paused ? 'tag-skipped' : finished ? 'tag-filled' : 'tag-dca'}">${paused ? '已暂停' : finished ? '已结束' : '运行中'}</span>
             </div>
@@ -607,12 +701,12 @@ function renderHistory() {
         dataZoom: [{ type: 'inside', throttle: 50 }],
         series: [
             {
-                name: '总资产', type: 'line', data: values, smooth: true, showSymbol: false,
+                name: '证券市值', type: 'line', data: values, smooth: true, showSymbol: false,
                 lineStyle: { width: 2.2 }, areaStyle: { opacity: 0.12 },
                 emphasis: { focus: 'series' },
             },
             {
-                name: '成本', type: 'line', data: costs, smooth: true, showSymbol: false,
+                name: '证券成本', type: 'line', data: costs, smooth: true, showSymbol: false,
                 lineStyle: { width: 1.2, type: 'dashed' }, emphasis: { focus: 'series' },
             },
         ],
@@ -724,6 +818,7 @@ function bindEvents() {
         refreshAll();
     });
     $('#allocBy')?.addEventListener('change', renderAlloc);
+    $('#holdingsAccountFilter')?.addEventListener('change', renderHoldings);
     $('#syncBtn')?.addEventListener('click', () => syncAll());
     $('#logoutBtn')?.addEventListener('click', async () => {
         await fetch('/wealth/logout', { method: 'POST', credentials: 'same-origin' });
@@ -732,6 +827,7 @@ function bindEvents() {
     $('#addTxBtn')?.addEventListener('click', () => openTransactionModal());
     $('#addTxFromHoldings')?.addEventListener('click', () => openTransactionModal());
     $('#addPlanBtn')?.addEventListener('click', () => openPlanModal());
+    $('#addAccountBtn')?.addEventListener('click', () => openAccountModal());
     $('#addAssetBtn')?.addEventListener('click', () => openAssetModal());
     $('#importBtn')?.addEventListener('click', openImportModal);
     $('#importCsvBtn')?.addEventListener('click', openCsvImportModal);
@@ -796,6 +892,28 @@ async function handleAction(el) {
                 : '已删除', 'success');
             await refreshAll();
             await loadTransactions(state.txPage);
+        } else if (action === 'edit-account') {
+            const account = state.accounts.find(a => String(a.id) === String(el.dataset.account));
+            if (account) openAccountModal(account);
+        } else if (action === 'toggle-account') {
+            const active = el.dataset.active === '1';
+            await api('/api/wm/accounts/' + el.dataset.account, {
+                method: 'PUT', body: { is_active: !active },
+            });
+            toast(active ? '账户已停用' : '账户已启用', 'success');
+            await refreshAll();
+        } else if (action === 'delete-account') {
+            const account = state.accounts.find(a => String(a.id) === String(el.dataset.account));
+            if (!confirm(`删除账户「${account?.name || ''}」？\n\n账户下的现金余额也会删除，此操作不可恢复。`)) return;
+            await api('/api/wm/accounts/' + el.dataset.account, { method: 'DELETE' });
+            toast('账户已删除', 'success');
+            await refreshAll();
+            await loadTransactions(state.txPage);
+        } else if (action === 'account-transactions') {
+            const select = $('#txAccountFilter');
+            if (select) select.value = el.dataset.account;
+            state.txPage = 1;
+            switchTab('transactions');
         } else if (action === 'pause-plan') {
             await api(`/api/wm/dca/plans/${el.dataset.plan}/pause`, { method: 'POST' });
             toast('已暂停', 'success');
@@ -1015,6 +1133,53 @@ function openAssetModal(asset = null) {
             if (!editing && saved?.id) {
                 setTimeout(() => refreshAll(), 2500);
             }
+        } catch (err) {
+            toast(err.message, 'error');
+        } finally {
+            submitting = false;
+            if (submitBtn) submitBtn.disabled = false;
+        }
+    });
+}
+
+/* ── account modal ─────────────────────────────────────────── */
+function openAccountModal(account = null) {
+    const editing = Boolean(account);
+    const a = account || {};
+    const currencies = ['CNY', 'USD', 'HKD'];
+    if (a.currency && !currencies.includes(a.currency)) currencies.push(a.currency);
+    const html = `<form id="modalForm">
+        <div class="full alert alert-info">投资账户对应 Ghostfolio 的券商/平台账户，不是登录账号。删除账户前需要先清空其交易和定投计划。</div>
+        <div class="form-grid">
+            ${field('账户名称', `<input name="name" value="${esc(a.name || '')}" required placeholder="如 招商证券 / IBKR">`, '', 'full')}
+            ${field('平台 / 券商', `<input name="broker" value="${esc(a.broker || '')}" placeholder="可选">`)}
+            ${field('币种', `<select name="currency">${currencies.map(c => `<option value="${c}" ${(a.currency || 'CNY') === c ? 'selected' : ''}>${c}</option>`).join('')}</select>`)}
+            ${editing ? field('状态', `<select name="is_active"><option value="1" ${a.is_active ? 'selected' : ''}>启用</option><option value="0" ${!a.is_active ? 'selected' : ''}>停用</option></select>`) : ''}
+        </div>
+        <div class="form-actions">
+            <button type="button" class="btn btn-ghost" data-close>取消</button>
+            <button type="submit" class="btn btn-primary">${editing ? '保存' : '创建账户'}</button>
+        </div>
+    </form>`;
+    openModal(editing ? '编辑账户' : '新建账户', html);
+    $('#modalBody [data-close]')?.addEventListener('click', closeModal);
+    let submitting = false;
+    $('#modalForm').addEventListener('submit', async event => {
+        event.preventDefault();
+        if (submitting) return;
+        const data = formDataObject(event.target);
+        if (editing) data.is_active = data.is_active === '1';
+        else delete data.is_active;
+        submitting = true;
+        const submitBtn = event.target.querySelector('button[type=submit]');
+        if (submitBtn) submitBtn.disabled = true;
+        try {
+            const url = editing ? '/api/wm/accounts/' + a.id : '/api/wm/accounts';
+            await api(url, { method: editing ? 'PUT' : 'POST', body: data });
+            toast(editing ? '账户已保存' : '账户已创建', 'success');
+            closeModal();
+            await refreshAll();
+            await loadTransactions(state.txPage);
         } catch (err) {
             toast(err.message, 'error');
         } finally {
@@ -1376,6 +1541,7 @@ function openImportModal() {
             box.style.display = 'block';
             box.innerHTML = `<div class="preview-row"><b>可导入 ${data.activities} 笔</b><span>新资产 ${data.new_assets?.length || 0} 个</span></div>
                 <div class="preview-row"><span>重复跳过</span><span>${data.duplicates || 0}</span></div>
+                <div class="preview-row"><span>账户余额</span><span>${data.balances || 0} 条</span></div>
                 <div class="preview-row"><span>不支持/跳过</span><span>${data.skipped || 0}</span></div>
                 ${data.errors?.length ? `<div class="warn">${data.errors.map(esc).join('<br>')}</div>` : ''}
                 ${data.new_assets?.length ? `<div style="margin-top:6px">${data.new_assets.map(a => `<span class="tag">${esc(a.name)} ${esc(a.symbol)}</span>`).join(' ')}</div>` : ''}`;
@@ -1406,7 +1572,8 @@ function openImportModal() {
             }
             toast(data.warnings?.length
                 ? `导入完成：${data.imported} 笔；${data.warnings.length} 笔使用最新汇率`
-                : `导入完成：${data.imported} 笔，新资产 ${data.new_assets} 个`, 'success');
+                : `导入完成：${data.imported} 笔，新资产 ${data.new_assets} 个`
+                  + (data.balances ? `，账户余额 ${data.balances} 条` : ''), 'success');
             closeModal();
             await refreshAll();
             await loadTransactions(1);

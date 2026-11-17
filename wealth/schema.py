@@ -18,6 +18,19 @@ CREATE TABLE IF NOT EXISTS wm_account (
     UNIQUE(name)
 );
 
+CREATE TABLE IF NOT EXISTS wm_account_balance (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id   INTEGER NOT NULL REFERENCES wm_account(id),
+    balance_date TEXT NOT NULL,
+    amount       REAL NOT NULL,
+    currency     TEXT NOT NULL DEFAULT 'CNY',
+    source       TEXT,
+    created_at   TEXT NOT NULL,
+    UNIQUE(account_id, balance_date)
+);
+CREATE INDEX IF NOT EXISTS idx_wm_account_balance
+    ON wm_account_balance (account_id, balance_date);
+
 CREATE TABLE IF NOT EXISTS wm_asset (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     symbol         TEXT NOT NULL,

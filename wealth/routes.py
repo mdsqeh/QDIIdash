@@ -27,7 +27,7 @@ CLASSES = {'stock', 'etf', 'fund', 'crypto', 'bank_wm', 'other'}
 FREQUENCIES = {'daily', 'weekly', 'biweekly', 'monthly'}
 TX_TYPES = {'buy', 'sell', 'dividend', 'reinvest', 'fee', 'interest', 'split'}
 MARKET_CURRENCIES = {
-    'CN': {'CNY'}, 'FUND_CN': {'CNY'}, 'BANK': {'CNY'},
+    'CN': {'CNY'}, 'FUND_CN': {'CNY', 'USD', 'HKD'}, 'BANK': {'CNY'},
     'US': {'USD'}, 'HK': {'HKD'}, 'CRYPTO': {'USD'},
     'MANUAL': {'CNY', 'USD', 'HKD'},
 }
@@ -206,6 +206,8 @@ def _create_asset_record(conn, data, resolve=False):
     if allowed_currencies and currency not in allowed_currencies:
         raise ValueError(f'{market} 资产币种应为 {"/".join(sorted(allowed_currencies))}，收到 {currency}')
     quote_source = str(data.get('quote_source') or _default_source(market))
+    if market == 'FUND_CN' and currency != 'CNY' and quote_source == 'fund_em':
+        raise ValueError('非 CNY 场外基金请使用手动价格（天天基金净值默认是 CNY）')
     lot_size, allow_fraction = _default_lot(asset_class, market)
     maturity_date = data.get('maturity_date') or None
     if maturity_date:
@@ -580,12 +582,17 @@ def api_asset(asset_id):
     if request.method == 'DELETE':
         tx = conn.execute('SELECT COUNT(*) AS c FROM wm_transaction WHERE asset_id = ?', (asset_id,)).fetchone()['c']
         plan = conn.execute('SELECT COUNT(*) AS c FROM wm_dca_plan WHERE asset_id = ?', (asset_id,)).fetchone()['c']
-        if tx or plan:
-            return _error('该资产已有交易或定投计划，不能删除；可先停用', 409)
+        if plan:
+            return _error('该资产已有关联定投计划，暂不能删除；可先停用', 409)
+        force = _flag(request.args.get('force') or _body().get('force'))
+        if tx and not force:
+            return _error(f'该资产有 {tx} 笔交易；确认删除请使用强制删除', 409)
+        if tx:
+            conn.execute('DELETE FROM wm_transaction WHERE asset_id = ?', (asset_id,))
         conn.execute('DELETE FROM wm_price WHERE asset_id = ?', (asset_id,))
         conn.execute('DELETE FROM wm_asset WHERE id = ?', (asset_id,))
         conn.commit()
-        return jsonify({'ok': True})
+        return jsonify({'ok': True, 'deleted_transactions': tx})
     data = _body()
     if data.get('symbol') and str(data['symbol']).strip() != asset['symbol']:
         return _error('资产代码不能修改')
@@ -624,6 +631,9 @@ def api_asset(asset_id):
         return _error('不支持的估值方式')
     if fields['interest_mode'] not in ('simple', 'compound'):
         return _error('不支持的计息方式')
+    if (asset['market'] == 'FUND_CN' and (asset['currency'] or 'CNY') != 'CNY'
+            and fields['quote_source'] == 'fund_em'):
+        return _error('非 CNY 场外基金请使用手动价格（天天基金净值默认是 CNY）')
     conn.execute(
         """UPDATE wm_asset SET name=?, asset_class=?, quote_source=?, quote_key=?, lot_size=?,
            allow_fraction=?, valuation_mode=?, annual_rate=?, interest_mode=?,

@@ -439,7 +439,7 @@ function renderAssets() {
         return;
     }
     body.innerHTML = state.assets.map(a => {
-        const canDelete = !a.tx_count && !a.plan_count;
+        const canDelete = !a.plan_count;
         const isAccrual = a.quote_source === 'accrual' || a.valuation_mode === 'accrual';
         const sourceLabel = { eastmoney: '东方财富', fund_em: '基金净值', binance: 'Binance', manual: '手动', accrual: '按日计提' }[a.quote_source] || a.quote_source;
         return `<tr>
@@ -454,7 +454,7 @@ function renderAssets() {
                 ${isAccrual ? '' : `<button class="btn btn-ghost btn-sm" data-action="asset-price" data-asset="${a.id}">手工价格</button>`}
                 <button class="btn btn-ghost btn-sm" data-action="edit-asset" data-asset="${a.id}">编辑</button>
                 <button class="btn btn-ghost btn-sm" data-action="toggle-asset" data-asset="${a.id}" data-active="${a.is_active ? 1 : 0}">${a.is_active ? '停用' : '启用'}</button>
-                ${canDelete ? `<button class="btn btn-danger btn-sm" data-action="delete-asset" data-asset="${a.id}">删除</button>` : ''}
+                ${canDelete ? `<button class="btn btn-danger btn-sm" data-action="delete-asset" data-asset="${a.id}" data-force="${a.tx_count ? 1 : 0}">删除</button>` : ''}
             </div></td>
         </tr>`;
     }).join('');
@@ -781,10 +781,21 @@ async function handleAction(el) {
             toast(active ? '已停用' : '已启用', 'success');
             await refreshAll();
         } else if (action === 'delete-asset') {
-            if (!confirm('删除这个资产？只有没有交易和定投计划的资产可以删除。')) return;
-            await api('/api/wm/assets/' + el.dataset.asset, { method: 'DELETE' });
-            toast('已删除', 'success');
+            const asset = state.assets.find(a => String(a.id) === String(el.dataset.asset));
+            const force = el.dataset.force === '1';
+            const txCount = asset?.tx_count || 0;
+            const msg = force
+                ? `删除资产「${asset?.name || ''}」及其 ${txCount} 笔交易？\n\n交易记录和价格会一起删除，此操作不可恢复。`
+                : `删除资产「${asset?.name || ''}」？`;
+            if (!confirm(msg)) return;
+            const data = await api(
+                '/api/wm/assets/' + el.dataset.asset + (force ? '?force=1' : ''),
+                { method: 'DELETE' });
+            toast(data.deleted_transactions
+                ? `已删除资产和 ${data.deleted_transactions} 笔交易`
+                : '已删除', 'success');
             await refreshAll();
+            await loadTransactions(state.txPage);
         } else if (action === 'pause-plan') {
             await api(`/api/wm/dca/plans/${el.dataset.plan}/pause`, { method: 'POST' });
             toast('已暂停', 'success');
@@ -903,7 +914,7 @@ function openAssetModal(asset = null) {
             ${field('代码', `<input name="symbol" id="assetSymbol" value="${esc(a.symbol || '')}" ${editing ? 'readonly' : ''} placeholder="如 600519 / AAPL / 000001 / BTCUSDT">`)}
             ${field('名称', `<input name="name" id="assetName" value="${esc(a.name || '')}" placeholder="可留空自动查询">`, '', 'full')}
             ${field('类别', `<select name="asset_class" id="assetClass">${classes.map(c => `<option value="${c}" ${a.asset_class === c ? 'selected' : ''}>${CLASS_LABELS[c]}</option>`).join('')}</select>`)}
-            ${field('币种', `<select name="currency" id="assetCurrency" ${editing ? 'disabled' : ''}>${['CNY', 'USD', 'HKD'].map(c => `<option value="${c}" ${a.currency === c ? 'selected' : ''}>${c}</option>`).join('')}</select>`)}
+            ${field('币种', `<select name="currency" id="assetCurrency" ${editing ? 'disabled' : ''}>${['CNY', 'USD', 'HKD'].map(c => `<option value="${c}" ${a.currency === c ? 'selected' : ''}>${c}</option>`).join('')}</select>`, '场外基金非 CNY 时请确认净值币种，必要时行情源选手动价格')}
             ${field('行情源', `<select name="quote_source" id="assetSource">${sources.map(([v, l]) => `<option value="${v}" ${a.quote_source === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`)}
             ${field('行情代码 / 交易对', `<input name="quote_key" id="assetQuoteKey" value="${esc(a.quote_key || '')}" placeholder="一般留空，自动解析">`)}
             ${field('最小交易单位', `<input name="lot_size" type="number" step="any" min="0" value="${a.lot_size ?? 1}">`)}
@@ -945,6 +956,12 @@ function openAssetModal(asset = null) {
     };
     $('#assetMarket')?.addEventListener('change', syncDefaults);
     syncDefaults();
+    $('#assetCurrency')?.addEventListener('change', () => {
+        if ($('#assetMarket')?.value === 'FUND_CN' && $('#assetCurrency')?.value !== 'CNY') {
+            const source = $('#assetSource');
+            if (source) source.value = 'manual';
+        }
+    });
     const toggleBankFields = () => {
         $('#bankFields').style.display = $('#assetValuation').value === 'accrual' ? 'block' : 'none';
     };

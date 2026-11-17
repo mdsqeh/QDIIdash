@@ -445,6 +445,21 @@ class ImportAndParsingTests(WealthTestBase):
             prices._binance_get = original
         self.assertEqual(rows, [('2025-01-01', 100.0)])
 
+    def test_fund_currency_override(self):
+        from wealth.routes import _create_asset_record
+        fund, created = _create_asset_record(self.conn, {
+            'symbol': '000044', 'market': 'FUND_CN', 'asset_class': 'fund',
+            'name': '美元基金', 'currency': 'USD', 'quote_source': 'manual',
+        })
+        self.assertTrue(created)
+        self.assertEqual(fund['currency'], 'USD')
+        self.assertEqual(fund['quote_source'], 'manual')
+        with self.assertRaises(ValueError):
+            _create_asset_record(self.conn, {
+                'symbol': '000045', 'market': 'FUND_CN', 'asset_class': 'fund',
+                'name': '美元基金', 'currency': 'USD', 'quote_source': 'fund_em',
+            })
+
     def test_ghostfolio_market_guess(self):
         from wealth.routes import _guess_market, _create_asset_record
         self.assertEqual(_guess_market('AAPL', 'USD', 'YAHOO', 'EQUITY'), 'US')

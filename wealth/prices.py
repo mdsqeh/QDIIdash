@@ -318,6 +318,13 @@ def sync_asset(conn, asset, full=False, start=None):
     source = asset.get('quote_source') or 'manual'
     if source in ('manual', 'accrual'):
         return 0
+    native_currency = {
+        'CN': 'CNY', 'US': 'USD', 'HK': 'HKD',
+        'FUND_CN': 'CNY', 'CRYPTO': 'USD',
+    }.get(asset.get('market'))
+    asset_currency = (asset.get('currency') or 'CNY').upper()
+    if native_currency and asset_currency != native_currency:
+        raise PriceError('资产币种与行情源本币不一致，请使用手动价格')
     today = parse_date(today_str())
 
     asset_id = asset['id']

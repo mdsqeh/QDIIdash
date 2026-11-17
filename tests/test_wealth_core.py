@@ -506,11 +506,13 @@ class ImportAndParsingTests(WealthTestBase):
         self.assertTrue(created)
         self.assertEqual(fund['currency'], 'USD')
         self.assertEqual(fund['quote_source'], 'manual')
-        with self.assertRaises(ValueError):
-            _create_asset_record(self.conn, {
-                'symbol': '000045', 'market': 'FUND_CN', 'asset_class': 'fund',
-                'name': '美元基金', 'currency': 'USD', 'quote_source': 'fund_em',
-            })
+        # A non-CNY fund must not use the CNY NAV source; switch to manual.
+        fund, created = _create_asset_record(self.conn, {
+            'symbol': '000045', 'market': 'FUND_CN', 'asset_class': 'fund',
+            'name': '美元基金', 'currency': 'USD', 'quote_source': 'fund_em',
+        })
+        self.assertTrue(created)
+        self.assertEqual(fund['quote_source'], 'manual')
 
     def test_ghostfolio_top_level_asset_profiles(self):
         from wealth.routes import _ghostfolio_rows
@@ -569,10 +571,13 @@ class ImportAndParsingTests(WealthTestBase):
         self.assertEqual(_guess_market('0700.HK', 'HKD', 'YAHOO', 'EQUITY'), 'HK')
         self.assertEqual(_guess_market('bitcoin', 'USD', 'COINGECKO', 'CRYPTO'), 'CRYPTO')
         self.assertEqual(_guess_market('CASH', 'CNY', 'MANUAL', 'CASH'), 'MANUAL')
-        with self.assertRaises(ValueError):
-            _create_asset_record(self.conn, {
-                'symbol': '600519', 'market': 'CN', 'currency': 'USD',
-            })
+        cn_usd, created = _create_asset_record(self.conn, {
+            'symbol': '600519', 'market': 'CN', 'currency': 'USD',
+            'name': '美元计价测试', 'quote_source': 'eastmoney',
+        })
+        self.assertTrue(created)
+        self.assertEqual(cn_usd['currency'], 'USD')
+        self.assertEqual(cn_usd['quote_source'], 'manual')
 
     def test_ghostfolio_symbol_normalization(self):
         from wealth.routes import _ghostfolio_rows, _create_asset_record

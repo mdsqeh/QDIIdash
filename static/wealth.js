@@ -1029,10 +1029,10 @@ function openAssetModal(asset = null) {
     const html = `<form id="modalForm">
         <div class="form-grid">
             ${field('市场', `<select name="market" id="assetMarket" ${editing ? 'disabled' : ''}>${markets.map(m => `<option value="${m}" ${a.market === m ? 'selected' : ''}>${MARKET_LABELS[m]}</option>`).join('')}</select>`)}
+            ${field('币种', `<select name="currency" id="assetCurrency" ${editing && (a.tx_count || a.plan_count) ? 'disabled' : ''}>${['CNY', 'USD', 'HKD'].map(c => `<option value="${c}" ${a.currency === c ? 'selected' : ''}>${c}</option>`).join('')}</select>`, '查询结果不一定准确，可手动选择；非本币会自动改用手动价格')}
             ${field('代码', `<input name="symbol" id="assetSymbol" value="${esc(a.symbol || '')}" ${editing ? 'readonly' : ''} placeholder="如 600519 / AAPL / 000001 / BTCUSDT">`)}
             ${field('名称', `<input name="name" id="assetName" value="${esc(a.name || '')}" placeholder="可留空自动查询">`, '', 'full')}
             ${field('类别', `<select name="asset_class" id="assetClass">${classes.map(c => `<option value="${c}" ${a.asset_class === c ? 'selected' : ''}>${CLASS_LABELS[c]}</option>`).join('')}</select>`)}
-            ${field('币种', `<select name="currency" id="assetCurrency" ${editing ? 'disabled' : ''}>${['CNY', 'USD', 'HKD'].map(c => `<option value="${c}" ${a.currency === c ? 'selected' : ''}>${c}</option>`).join('')}</select>`, '场外基金非 CNY 时请确认净值币种，必要时行情源选手动价格')}
             ${field('行情源', `<select name="quote_source" id="assetSource">${sources.map(([v, l]) => `<option value="${v}" ${a.quote_source === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`)}
             ${field('行情代码 / 交易对', `<input name="quote_key" id="assetQuoteKey" value="${esc(a.quote_key || '')}" placeholder="一般留空，自动解析">`)}
             ${field('最小交易单位', `<input name="lot_size" type="number" step="any" min="0" value="${a.lot_size ?? 1}">`)}
@@ -1056,12 +1056,27 @@ function openAssetModal(asset = null) {
     openModal(editing ? '编辑资产' : '添加资产', html);
     $('#modalBody [data-close]')?.addEventListener('click', closeModal);
 
+    let currencyTouched = Boolean(editing);
+    const nativeCurrency = market => ({
+        CN: 'CNY', US: 'USD', HK: 'HKD', FUND_CN: 'CNY', CRYPTO: 'USD',
+        BANK: 'CNY', MANUAL: 'CNY',
+    }[market] || null);
+    const applyCurrencySourceRule = () => {
+        const market = $('#assetMarket')?.value;
+        const currency = $('#assetCurrency')?.value;
+        const native = nativeCurrency(market);
+        const source = $('#assetSource');
+        if (native && currency && currency !== native && source
+                && !['manual', 'accrual'].includes(source.value)) {
+            source.value = 'manual';
+        }
+    };
     const syncDefaults = () => {
         if (editing) return;
+        currencyTouched = false;
         const market = $('#assetMarket').value;
-        const map = { CN: 'CNY', US: 'USD', HK: 'HKD', FUND_CN: 'CNY', CRYPTO: 'USD', BANK: 'CNY', MANUAL: 'CNY' };
+        $('#assetCurrency').value = nativeCurrency(market) || 'CNY';
         const source = { CN: 'eastmoney', US: 'eastmoney', HK: 'eastmoney', FUND_CN: 'fund_em', CRYPTO: 'binance', BANK: 'accrual', MANUAL: 'manual' };
-        $('#assetCurrency').value = map[market] || 'CNY';
         $('#assetSource').value = source[market] || 'manual';
         $('#assetValuation').value = market === 'BANK' ? 'accrual' : 'price';
         $('#assetClass').value = { FUND_CN: 'fund', CRYPTO: 'crypto', BANK: 'bank_wm' }[market] || 'stock';
@@ -1071,15 +1086,16 @@ function openAssetModal(asset = null) {
         if (lotInput) lotInput.value = ['CN', 'HK'].includes(market) ? 100 : 1;
         $('#bankFields').style.display = market === 'BANK' ? 'block' : 'none';
         $('#assetSymbol').placeholder = market === 'FUND_CN' ? '6 位基金代码' : market === 'CRYPTO' ? '如 BTC 或 BTCUSDT' : '代码';
+        applyCurrencySourceRule();
     };
     $('#assetMarket')?.addEventListener('change', syncDefaults);
     syncDefaults();
     $('#assetCurrency')?.addEventListener('change', () => {
-        if ($('#assetMarket')?.value === 'FUND_CN' && $('#assetCurrency')?.value !== 'CNY') {
-            const source = $('#assetSource');
-            if (source) source.value = 'manual';
-        }
+        currencyTouched = true;
+        applyCurrencySourceRule();
     });
+    $('#assetSource')?.addEventListener('change', applyCurrencySourceRule);
+    applyCurrencySourceRule();
     const toggleBankFields = () => {
         $('#bankFields').style.display = $('#assetValuation').value === 'accrual' ? 'block' : 'none';
     };
@@ -1096,11 +1112,14 @@ function openAssetModal(asset = null) {
             const data = await api(`/api/wm/lookup?symbol=${encodeURIComponent(symbol)}&market=${encodeURIComponent(market)}`);
             if (!data.found) throw new Error(data.error || '未找到');
             $('#assetName').value = data.name || $('#assetName').value;
-            if (data.currency) $('#assetCurrency').value = data.currency;
+            if (!currencyTouched && data.currency) $('#assetCurrency').value = data.currency;
             if (data.quote_source) $('#assetSource').value = data.quote_source;
             if (data.quote_key) $('#assetQuoteKey').value = data.quote_key;
             if (data.asset_class) $('#assetClass').value = data.asset_class;
-            toast('已查询，确认后保存', 'success');
+            applyCurrencySourceRule();
+            toast(currencyTouched && data.currency && data.currency !== $('#assetCurrency').value
+                ? `已查询；保留手动币种 ${$('#assetCurrency').value}`
+                : '已查询，确认后保存', 'success');
         } catch (err) {
             toast(err.message, 'error');
         } finally {
@@ -1123,8 +1142,15 @@ function openAssetModal(asset = null) {
         try {
             const url = editing ? '/api/wm/assets/' + a.id : '/api/wm/assets';
             const saved = await api(url, { method: editing ? 'PUT' : 'POST', body: data });
+            const native = nativeCurrency(data.market);
+            const currencyChanged = editing && data.currency && a.currency
+                && data.currency !== a.currency;
             if (!editing && saved.existing) {
                 toast('资产已存在，已保留原记录', 'error');
+            } else if (currencyChanged) {
+                toast('币种已更新；原价格记录已清除，请重新补价', 'success');
+            } else if (!editing && native && data.currency !== native) {
+                toast('资产已添加；非本币资产请手工补价', 'success');
             } else {
                 toast(editing ? '已保存' : '资产已添加，正在拉取行情', 'success');
             }

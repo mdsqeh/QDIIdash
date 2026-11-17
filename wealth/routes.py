@@ -26,10 +26,10 @@ MARKETS = {'CN', 'US', 'HK', 'FUND_CN', 'CRYPTO', 'BANK', 'MANUAL'}
 CLASSES = {'stock', 'etf', 'fund', 'crypto', 'bank_wm', 'other'}
 FREQUENCIES = {'daily', 'weekly', 'biweekly', 'monthly'}
 TX_TYPES = {'buy', 'sell', 'dividend', 'reinvest', 'fee', 'interest', 'split'}
-MARKET_CURRENCIES = {
-    'CN': {'CNY'}, 'FUND_CN': {'CNY', 'USD', 'HKD'}, 'BANK': {'CNY'},
-    'US': {'USD'}, 'HK': {'HKD'}, 'CRYPTO': {'USD'},
-    'MANUAL': {'CNY', 'USD', 'HKD'},
+ASSET_CURRENCIES = {'CNY', 'USD', 'HKD'}
+MARKET_DEFAULT_CURRENCY = {
+    'CN': 'CNY', 'FUND_CN': 'CNY', 'BANK': 'CNY',
+    'US': 'USD', 'HK': 'HKD', 'CRYPTO': 'USD', 'MANUAL': 'CNY',
 }
 
 
@@ -151,7 +151,7 @@ def _account(conn, account_id):
 
 
 def _default_currency(market):
-    return {'US': 'USD', 'HK': 'HKD', 'CRYPTO': 'USD'}.get(market, 'CNY')
+    return MARKET_DEFAULT_CURRENCY.get(market, 'CNY')
 
 
 def _default_source(market):
@@ -202,12 +202,12 @@ def _create_asset_record(conn, data, resolve=False):
 
     name = str(data.get('name') or '').strip()
     currency = str(data.get('currency') or _default_currency(market)).upper()
-    allowed_currencies = MARKET_CURRENCIES.get(market)
-    if allowed_currencies and currency not in allowed_currencies:
-        raise ValueError(f'{market} 资产币种应为 {"/".join(sorted(allowed_currencies))}，收到 {currency}')
+    if currency not in ASSET_CURRENCIES:
+        raise ValueError(f'资产币种应为 {"/".join(sorted(ASSET_CURRENCIES))}，收到 {currency}')
     quote_source = str(data.get('quote_source') or _default_source(market))
-    if market == 'FUND_CN' and currency != 'CNY' and quote_source == 'fund_em':
-        raise ValueError('非 CNY 场外基金请使用手动价格（天天基金净值默认是 CNY）')
+    native_currency = MARKET_DEFAULT_CURRENCY.get(market)
+    if native_currency and currency != native_currency and quote_source not in ('manual', 'accrual'):
+        quote_source = 'manual'
     lot_size, allow_fraction = _default_lot(asset_class, market)
     maturity_date = data.get('maturity_date') or None
     if maturity_date:
@@ -232,7 +232,7 @@ def _create_asset_record(conn, data, resolve=False):
             quote_key = symbol
         elif market == 'CRYPTO':
             quote_key = prices._binance_symbol(symbol)
-    if resolve and market == 'US' and not quote_key:
+    if resolve and market == 'US' and not quote_key and quote_source not in ('manual', 'accrual'):
         try:
             quote_key = prices.resolve_eastmoney_us(symbol)
         except Exception:
@@ -608,9 +608,24 @@ def api_asset(asset_id):
         return _error('资产代码不能修改')
     if data.get('market') and str(data['market']).upper() != asset['market']:
         return _error('资产市场不能修改')
+    current_currency = (asset['currency'] or 'CNY').upper()
+    requested_currency = str(data.get('currency', current_currency) or current_currency).upper()
+    if requested_currency not in ASSET_CURRENCIES:
+        return _error(f'资产币种应为 {"/".join(sorted(ASSET_CURRENCIES))}')
+    currency_changed = requested_currency != current_currency
+    if currency_changed:
+        used = conn.execute(
+            'SELECT COUNT(*) AS c FROM wm_transaction WHERE asset_id = ?', (asset_id,)
+        ).fetchone()['c']
+        plans = conn.execute(
+            'SELECT COUNT(*) AS c FROM wm_dca_plan WHERE asset_id = ?', (asset_id,)
+        ).fetchone()['c']
+        if used or plans:
+            return _error('该资产已有交易或定投计划，币种不能修改；可删除后重新添加')
     fields = {
         'name': str(data.get('name', asset['name']) or asset['symbol']).strip(),
         'asset_class': data.get('asset_class', asset['asset_class']),
+        'currency': requested_currency,
         'quote_source': data.get('quote_source', asset['quote_source']) or asset['quote_source'],
         'quote_key': data.get('quote_key', asset['quote_key']) or None,
         'lot_size': max(_num(data.get('lot_size'), asset['lot_size'] or 1), 1e-9),
@@ -641,15 +656,23 @@ def api_asset(asset_id):
         return _error('不支持的估值方式')
     if fields['interest_mode'] not in ('simple', 'compound'):
         return _error('不支持的计息方式')
-    if (asset['market'] == 'FUND_CN' and (asset['currency'] or 'CNY') != 'CNY'
-            and fields['quote_source'] == 'fund_em'):
-        return _error('非 CNY 场外基金请使用手动价格（天天基金净值默认是 CNY）')
+    native_currency = MARKET_DEFAULT_CURRENCY.get(asset['market'])
+    if (native_currency and fields['currency'] != native_currency
+            and fields['quote_source'] not in ('manual', 'accrual')):
+        fields['quote_source'] = 'manual'
     conn.execute(
-        """UPDATE wm_asset SET name=?, asset_class=?, quote_source=?, quote_key=?, lot_size=?,
+        """UPDATE wm_asset SET name=?, asset_class=?, currency=?, quote_source=?, quote_key=?, lot_size=?,
            allow_fraction=?, valuation_mode=?, annual_rate=?, interest_mode=?,
            maturity_date=?, is_active=?, note=? WHERE id=?""",
         (*fields.values(), asset_id),
     )
+    if currency_changed:
+        conn.execute('DELETE FROM wm_price WHERE asset_id = ?', (asset_id,))
+        conn.execute(
+            """UPDATE wm_asset SET last_price = NULL, last_price_date = NULL,
+               last_price_at = NULL, last_error = NULL WHERE id = ?""",
+            (asset_id,),
+        )
     conn.commit()
     return jsonify(_asset(conn, asset_id))
 
@@ -1458,11 +1481,10 @@ def _prepare_import(conn, payload, dry_run=True):
             errors.append(f'{row["symbol"]} {row["trade_date"]}: 币种 {row["currency"]} '
                           f'与已有资产币种 {existing.get("currency")} 不一致')
             continue
-        allowed = MARKET_CURRENCIES.get(row['market'])
-        if key not in existing_assets and allowed and row['currency'] not in allowed:
+        if key not in existing_assets and row['currency'] not in ASSET_CURRENCIES:
             skipped += 1
-            errors.append(f'{row["symbol"]}: {row["market"]} 资产币种应为 '
-                          f'{"/".join(sorted(allowed))}，收到 {row["currency"]}')
+            errors.append(f'{row["symbol"]}: 资产币种应为 '
+                          f'{"/".join(sorted(ASSET_CURRENCIES))}，收到 {row["currency"]}')
             continue
         row_name = row.get('name') or row['symbol']
         row_class = row.get('asset_class') or 'other'

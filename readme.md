@@ -548,7 +548,7 @@ APScheduler 在应用进程内运行（`Asia/Shanghai` 时区）：
 ```json
 {
   "message": "QDII 额度变动\n基金 000001（某某基金）日申购限额：1000 → 500",
-  "secret": "addressTagPWD"
+  "secret": "***"
 }
 ```
 

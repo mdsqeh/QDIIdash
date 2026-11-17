@@ -4,8 +4,12 @@ services:
     ports:
       - "5000:5000"
     restart: unless-stopped
+    # 本文件同目录的 .env 会被 Docker Compose 自动读取，用于下面的 ${...} 替换。
     environment:
       - TZ=Asia/Shanghai
       - DATA_DIR=/app/data
+      - WM_PASSWORD=${WM_PASSWORD:-}
+      - WM_SECRET_KEY=${WM_SECRET_KEY:-}
+      - WM_DB_PATH=${WM_DB_PATH:-}
     volumes:
       - ./data:/app/data

@@ -95,6 +95,8 @@ Flask + SQLite 后端、纯前端展示的 QDII 基金数据看板。自动采�
 | `WM_SECRET_KEY` | 随机 | Flask session 密钥；不设置时每次重启会使登录失效 |
 | `WM_DB_PATH` | `DATA_DIR/qdii.db` | 可选，财富模块单独的 SQLite 路径；一般不需要设置 |
 
+> 以上变量均可写在项目根目录 `.env`（复制 `.env.example`）；`app.py` 启动时自动加载，系统环境变量优先。
+
 ### 定时任务（新增）
 
 | 任务 | 触发时间 | 说明 |
@@ -191,6 +193,7 @@ fundx/
 ├── tests/
 │   └── test_wealth_core.py # 财富管理核心单元测试
 ├── requirements.txt        # Python 依赖
+├── .env.example            # 环境变量模板（复制为 .env，.env 不提交）
 ├── Dockerfile              # 镜像构建
 ├── docker-compose.yml      # 容器编排（端口 5000、数据挂载 ./data）
 ├── ecosystem.config.js     # PM2 进程配置
@@ -250,7 +253,32 @@ pip install -r requirements.txt
 
 > 首次安装 AKShare 会连带安装 pandas、numpy 等，耗时约 1–3 分钟。`fetcher.py` 还用到了 BeautifulSoup，已在 `requirements.txt` 中显式声明 `beautifulsoup4`。
 
-### 3. 启动
+### 3. 配置环境变量（推荐）
+
+`app.py` 会通过 `python-dotenv` 自动读取**项目根目录**（与 `app.py` 同级）的 `.env`。系统环境变量优先于 `.env`。
+
+```bash
+# Linux / macOS
+cp .env.example .env
+
+# Windows PowerShell
+Copy-Item .env.example .env
+```
+
+编辑 `.env`：
+
+```env
+WM_PASSWORD=你的财富管理密码
+WM_SECRET_KEY=一段足够长的随机字符串
+```
+
+- `.env` 已在 `.gitignore` 中，不要提交真实密码。
+- `WM_PASSWORD` 为空时，只允许本机（`127.0.0.1` / `::1`）访问 `/wealth`，外网返回 503。
+- `WM_SECRET_KEY` 不设置时每次重启都会生成随机密钥，登录状态会失效。
+- 本地 / PM2 部署可在 `.env` 里加 `DATA_DIR=./data`；Docker 部署固定使用 `/app/data`，不需要设置。
+- 修改 `.env` 后需要重启进程（`python app.py` / PM2 / 容器）。
+
+### 4. 启动
 
 ```bash
 python app.py
@@ -266,7 +294,7 @@ python app.py
 📅 定时任务已启动：每月1号 21:00 全量采集，每日 21:00 增量更新，额度监控交易日 9:00-19:00 每小时及 21:05
 ```
 
-### 4. 指定数据目录（可选）
+### 5. 指定数据目录（可选）
 
 默认数据库写在 `app.py` 同级目录。想放到别处（例如 NAS 挂载盘）：
 
@@ -282,7 +310,13 @@ DATA_DIR=/var/lib/fundx python app.py
 $env:DATA_DIR="D:\fundx-data"; python app.py
 ```
 
-### 5. 后台常驻（可选）
+也可以写在 `.env` 里：
+
+```env
+DATA_DIR=./data
+```
+
+### 6. 后台常驻（可选）
 
 本地长期运行时可用 `nohup` 或 PM2，参考[方式三](#方式三ubuntu--nginx--pm2-部署)（PM2 部分与操作系统无关，但 `ecosystem.config.js` 里的解释器路径写的是 `./venv/bin/python3`，Windows 需改成 `./venv/Scripts/python.exe`）。
 
@@ -304,6 +338,10 @@ git clone https://github.com/mdsqeh/QDIIdash.git && cd QDIIdash
 # 数据目录（compose 里挂载的是相对路径 ./data，不存在会自动创建）
 mkdir -p data
 
+# 创建 .env（与 docker-compose.yml 同目录），填写密码后再启动
+cp .env.example .env
+# 编辑 .env：至少设置 WM_PASSWORD 和 WM_SECRET_KEY
+
 docker compose up -d --build
 
 # 查看日志（首次会看到全量采集进度）
@@ -312,6 +350,12 @@ docker compose logs -f
 # 停止并移除容器（数据保留在宿主机）
 docker compose down
 ```
+
+> Docker Compose 会自动读取 `docker-compose.yml` 同目录的 `.env`，用于 `docker-compose.yml` 里的 `${WM_PASSWORD:-}` 等变量替换；**不需要把 `.env` 复制进镜像**。
+>
+> 修改 `.env` 后执行 `docker compose up -d --force-recreate` 让容器重新读取。
+>
+> 不创建 `.env` 也能启动，但 `WM_PASSWORD` 为空时 `/wealth` 只允许本机访问，外网返回 503。
 
 ### 2. 访问与端口调整
 
@@ -326,9 +370,13 @@ services:
     ports:
       - "5000:5000"          # 宿主机:容器
     restart: unless-stopped
+    # 同目录的 .env 会被 Docker Compose 自动读取，用于下面的 ${...} 替换
     environment:
       - TZ=Asia/Shanghai
       - DATA_DIR=/app/data
+      - WM_PASSWORD=${WM_PASSWORD:-}
+      - WM_SECRET_KEY=${WM_SECRET_KEY:-}
+      - WM_DB_PATH=${WM_DB_PATH:-}
     volumes:
       - ./data:/app/data     # 相对 compose 文件所在目录
 ```
@@ -400,17 +448,34 @@ pip install -r requirements.txt
 mkdir -p logs data
 ```
 
-### 第三步：配置并启动 PM2
+### 第三步：配置 .env 并启动 PM2
 
-`ecosystem.config.js` 已配置：单实例、自动重启、512M 内存上限、日志写入 `./logs`。若要把数据库放到 `data/` 目录，可在 `env` 里加 `DATA_DIR: './data'`。
+`app.py` 会用 `python-dotenv` 自动读取项目根目录（`cwd` 所在目录）的 `.env`，因此 PM2 部署也不需要把密码写进 `ecosystem.config.js`。
+
+```bash
+cp .env.example .env
+# 编辑 .env：至少设置 WM_PASSWORD 和 WM_SECRET_KEY
+# - .env 已被 .gitignore 忽略
+# - 系统环境变量优先于 .env
+# - 若要把数据库放到 data/ 目录，可在 .env 里加 DATA_DIR=./data
+```
+
+`ecosystem.config.js` 已配置：单实例、自动重启、512M 内存上限、日志写入 `./logs`。
 
 ```bash
 pm2 start ecosystem.config.js
+
+# 修改 .env 后重启（让新进程重新加载）
+pm2 restart qdii
 
 # 开机自启
 pm2 save
 sudo env PATH=$PATH:/usr/bin pm2 startup systemd -u ubuntu --hp /home/ubuntu
 ```
+
+> `pip install -r requirements.txt` 会安装 `python-dotenv`；如果跳过了这一步，`.env` 不会被读取。
+>
+> Docker 部署不使用这里的 `DATA_DIR`（容器内固定 `/app/data`）。
 
 ### 第四步：配置 Nginx 反向代理
 
@@ -478,13 +543,18 @@ curl -s http://127.0.0.1:5000/api/fetch/status
 
 ## 环境变量
 
+`app.py` 启动时会用 `python-dotenv` 读取**项目根目录**（与 `app.py` 同级）的 `.env`。系统环境变量优先于 `.env`；模板见 `.env.example`，`.env` 已被 `.gitignore` 忽略。
+
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `DATA_DIR` | `app.py` 所在目录 | SQLite 数据库存放目录，目录不存在会自动创建。Docker 部署时设为 `/app/data` |
 | `TZ` | 系统时区 | 建议 `Asia/Shanghai`。容器内已在 Dockerfile 中设置 |
 | `FLASK_ENV` | - | `ecosystem.config.js` 中设为 `production`，仅作标记，不影响行为 |
+| `WM_PASSWORD` | 空 | 财富管理访问密码；为空时仅本机可访问 `/wealth` |
+| `WM_SECRET_KEY` | 随机 | Flask session 密钥；建议固定，否则重启后登录失效 |
+| `WM_DB_PATH` | `DATA_DIR/qdii.db` | 可选，财富模块单独使用一个 SQLite 文件 |
 
-> 财富管理相关变量（`WM_PASSWORD`、`WM_SECRET_KEY`、`WM_DB_PATH`）见[个人财富管理](#个人财富管理)章节。
+> 财富管理的页面、定投规则和接口说明见[个人财富管理](#个人财富管理)章节。
 
 > 容器内监听端口固定为 `5000`（写在 `app.run(host='0.0.0.0', port=5000)`），不支持环境变量覆盖；宿主机端口在 compose 的 `ports` 里改。
 > Webhook 地址与密钥是 `app.py` 中的 `WEBHOOK_URL` / `WEBHOOK_SECRET` 常量，需要改代码。
@@ -611,6 +681,12 @@ Docker 部署改 compose 的 `ports` 左侧端口（如 `"8080:5000"`）；本�
 ---
 
 ## 更新日志
+
+### 2026-11-17
+
+- **个人财富管理**：新增 `/wealth` 全资产账本、自动定投、银行理财按日计提、Ghostfolio / CSV 导入导出、XIRR/TWR 与资产走势
+- **`.env` 支持**：`app.py` 启动时通过 `python-dotenv` 读取项目根目录 `.env`；Docker Compose 和 PM2 部署均可从 `.env` 读取 `WM_PASSWORD`、`WM_SECRET_KEY` 等变量
+- **依赖补全**：`requirements.txt` 增加 `python-dotenv`
 
 ### 2026-10-27
 

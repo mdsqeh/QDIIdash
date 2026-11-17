@@ -2,8 +2,9 @@
 QDII 基金数据看板 — Flask + SQLite Web 应用
 
 启动：
-    pip install flask akshare pandas apscheduler
-    python qdii/app.py
+    cp .env.example .env   # 可选，填写 WM_PASSWORD 等
+    pip install -r requirements.txt
+    python app.py
 
 QDII 数据每天 21:00（北京时间）定时采集。
 """
@@ -13,6 +14,12 @@ import sqlite3
 import threading
 import os
 from datetime import date, datetime, timezone, timedelta
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# 在导入业务模块前加载项目目录下的 .env（已有系统环境变量优先）。
+load_dotenv(Path(__file__).resolve().parent / '.env')
 
 from flask import Flask, g, jsonify, render_template, request
 from apscheduler.schedulers.background import BackgroundScheduler

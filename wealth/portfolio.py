@@ -485,10 +485,10 @@ def account_cash(conn, as_of=None):
     total = 0.0
     for row in rows:
         currency = (row['currency'] or row['account_currency'] or 'CNY').upper()
-        rate = 1.0 if currency == 'CNY' else fx_rate(conn, currency, as_of)
-        fx_missing = currency != 'CNY' and rate is None
-        rate = rate or 1.0
         amount = float(row['amount'] or 0)
+        rate = 1.0 if currency == 'CNY' else fx_rate(conn, currency, as_of)
+        fx_missing = amount != 0 and currency != 'CNY' and rate is None
+        rate = rate or 1.0
         cny_value = amount * rate
         result.append({
             'account_id': row['account_id'],

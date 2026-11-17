@@ -459,7 +459,7 @@ def net_invested_cny(conn, as_of):
 
 
 def account_cash(conn, as_of=None):
-    """Latest cash balance per account, converted to CNY.
+    """Latest cash balance per account and currency, converted to CNY.
 
     Returns ``(rows, total_cny)``; rows include ``account_name``/``currency``,
     ``balance_date``/``amount``, ``cny_value`` and ``fx_missing``.
@@ -473,9 +473,12 @@ def account_cash(conn, as_of=None):
            WHERE b.balance_date <= ?
              AND b.balance_date = (
                  SELECT MAX(b2.balance_date) FROM wm_account_balance b2
-                 WHERE b2.account_id = b.account_id AND b2.balance_date <= ?
+                 WHERE b2.account_id = b.account_id
+                   AND UPPER(COALESCE(b2.currency, 'CNY'))
+                       = UPPER(COALESCE(b.currency, 'CNY'))
+                   AND b2.balance_date <= ?
              )
-           ORDER BY a.id""",
+           ORDER BY a.id, b.currency""",
         (iso(as_of), iso(as_of)),
     ).fetchall()
     result = []

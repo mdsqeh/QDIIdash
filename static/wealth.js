@@ -270,7 +270,7 @@ function renderMetrics() {
     sub.push(`${s.position_count || 0} 个持仓`);
     if (s.unpriced?.length) sub.push(`${s.unpriced.length} 个缺价`);
     if (fxMissing) sub.push(`${fxMissing} 个持仓缺汇率`);
-    if (Number(s.cash_fx_missing || 0)) sub.push(`${s.cash_fx_missing} 个账户现金缺汇率`);
+    if (Number(s.cash_fx_missing || 0)) sub.push(`${s.cash_fx_missing} 项账户现金缺汇率`);
     $('#mTotalSub').textContent = sub.join(' · ');
     $('#mNet').textContent = fmtMoney(s.net_invested);
     $('#mPnl').textContent = fmtMoney(s.total_pnl);
@@ -369,15 +369,26 @@ function renderAccounts() {
     }
     const rows = state.accounts.map(a => {
         const stats = agg.get(String(a.id)) || { securities: 0, pnl: 0, count: 0 };
-        const cash = Number(a.cash_amount) || 0;
-        const cashCny = Number(a.cash_cny) || 0;
         const canDelete = !a.tx_count && !a.plan_count;
-        const cashText = a.cash_date
-            ? `${fmtCcy(cash, a.cash_currency || a.currency || 'CNY')}`
-              + ((a.cash_currency || a.currency) !== 'CNY' ? `<div class="muted" style="font-size:.66rem">≈ ${fmtMoney(cashCny)}</div>` : '')
-              + (a.cash_date ? `<div class="muted" style="font-size:.64rem">${esc(a.cash_date)}</div>` : '')
-              + (a.cash_fx_missing ? '<div class="neg" style="font-size:.66rem">缺汇率</div>' : '')
-            : '—';
+        const balances = Array.isArray(a.cash_balances) ? a.cash_balances : [];
+        let cashText = '—';
+        if (balances.length) {
+            cashText = balances.map(b => {
+                const currency = b.currency || a.currency || 'CNY';
+                const amount = Number(b.amount) || 0;
+                const cny = Number(b.cny_value) || 0;
+                return `<div class="${amount < 0 ? 'neg' : ''}">${fmtCcy(amount, currency)}`
+                    + (currency !== 'CNY'
+                        ? `<span class="muted" style="font-size:.66rem"> ≈ ${fmtMoney(cny)}</span>` : '')
+                    + (b.fx_missing ? ' <span class="neg" style="font-size:.66rem">缺汇率</span>' : '')
+                    + `</div>`;
+            }).join('');
+            if (balances.length > 1) {
+                cashText += `<div class="muted" style="font-size:.66rem">合计 ${fmtMoney(a.cash_cny)}</div>`;
+            } else if (balances[0].balance_date) {
+                cashText += `<div class="muted" style="font-size:.64rem">${esc(balances[0].balance_date)}</div>`;
+            }
+        }
         return `<tr>
             <td><div class="asset-cell"><span class="name">${esc(a.name)}</span><span class="code">${a.tx_count || 0} 笔交易 · ${a.plan_count || 0} 个计划</span></div></td>
             <td>${esc(a.broker || '—')}</td>
@@ -1187,15 +1198,46 @@ function openAccountModal(account = null) {
     const a = account || {};
     const currencies = ['CNY', 'USD', 'HKD'];
     if (a.currency && !currencies.includes(a.currency)) currencies.push(a.currency);
+    const originalBalances = Array.isArray(a.cash_balances) ? a.cash_balances : [];
+    for (const balance of originalBalances) {
+        if (balance.currency && !currencies.includes(balance.currency)) {
+            currencies.push(balance.currency);
+        }
+    }
+    const originalByCurrency = new Map(originalBalances.map(b => [b.currency, b]));
+    const cashRow = (balance = {}, isNew = true) => {
+        const currency = balance.currency || a.currency || 'CNY';
+        return `<div class="cash-row" data-cash-row data-new="${isNew ? '1' : '0'}" style="display:grid;grid-template-columns:88px minmax(90px,1fr) 148px auto;gap:8px;align-items:end;margin-bottom:8px">
+            <label class="field" style="margin:0"><span>币种</span>
+                <select data-cash-currency ${isNew ? '' : 'disabled'}>${currencies.map(c => `<option value="${c}" ${c === currency ? 'selected' : ''}>${c}</option>`).join('')}</select>
+            </label>
+            <label class="field" style="margin:0"><span>金额</span>
+                <input type="number" step="0.01" data-cash-amount value="${esc(balance.amount ?? '')}" placeholder="留空不修改">
+            </label>
+            <label class="field" style="margin:0"><span>余额日期</span>
+                <input type="date" data-cash-date value="${esc(balance.balance_date || todayIso())}">
+            </label>
+            ${isNew ? '<button type="button" class="btn btn-ghost btn-sm" data-remove-cash style="margin-bottom:1px">移除</button>' : '<span></span>'}
+        </div>`;
+    };
+    const initialBalances = originalBalances.length
+        ? originalBalances
+        : [{ currency: a.currency || 'CNY', amount: '', balance_date: todayIso() }];
     const html = `<form id="modalForm">
         <div class="full alert alert-info">投资账户对应 Ghostfolio 的券商/平台账户，不是登录账号。删除账户前需要先清空其交易和定投计划。</div>
         <div class="form-grid">
             ${field('账户名称', `<input name="name" value="${esc(a.name || '')}" required placeholder="如 招商证券 / IBKR">`, '', 'full')}
             ${field('平台 / 券商', `<input name="broker" value="${esc(a.broker || '')}" placeholder="可选">`)}
-            ${field('币种', `<select name="currency">${currencies.map(c => `<option value="${c}" ${(a.currency || 'CNY') === c ? 'selected' : ''}>${c}</option>`).join('')}</select>`)}
-            ${field('现金余额', `<input name="cash_amount" type="number" step="0.01" value="${a.cash_date ? a.cash_amount : ''}" placeholder="留空表示不修改">`, '按账户币种；计入总资产；填 0 表示清零')}
-            ${field('余额日期', `<input name="cash_date" type="date" value="${esc(a.cash_date || todayIso())}">`, '总资产取最新一条不晚于今天的余额')}
+            ${field('默认币种', `<select name="currency">${currencies.map(c => `<option value="${c}" ${(a.currency || 'CNY') === c ? 'selected' : ''}>${c}</option>`).join('')}</select>`, '新增现金行的默认币种')}
             ${editing ? field('状态', `<select name="is_active"><option value="1" ${a.is_active ? 'selected' : ''}>启用</option><option value="0" ${!a.is_active ? 'selected' : ''}>停用</option></select>`) : ''}
+        </div>
+        <div class="full" style="margin-top:8px">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
+                <strong>现金余额</strong>
+                <button type="button" class="btn btn-ghost btn-sm" id="addCashRow">+ 添加币种</button>
+            </div>
+            <div id="accountCashRows">${initialBalances.map(b => cashRow(b, !originalByCurrency.has(b.currency))).join('')}</div>
+            <small class="hint">每个币种一行；留空不修改，填 0 清零；买入/卖出会按成交币种自动增减对应现金。</small>
         </div>
         <div class="form-actions">
             <button type="button" class="btn btn-ghost" data-close>取消</button>
@@ -1204,6 +1246,30 @@ function openAccountModal(account = null) {
     </form>`;
     openModal(editing ? '编辑账户' : '新建账户', html);
     $('#modalBody [data-close]')?.addEventListener('click', closeModal);
+
+    const rowsWrap = $('#accountCashRows');
+    $('#addCashRow')?.addEventListener('click', () => {
+        const used = new Set($$('[data-cash-currency]', rowsWrap).map(select => select.value));
+        const next = currencies.find(currency => !used.has(currency));
+        if (!next) return toast('CNY / USD / HKD 已全部添加', 'error');
+        rowsWrap.insertAdjacentHTML('beforeend',
+            cashRow({ currency: next, amount: '', balance_date: todayIso() }, true));
+    });
+    rowsWrap?.addEventListener('click', event => {
+        const button = event.target.closest('[data-remove-cash]');
+        if (button) button.closest('[data-cash-row]')?.remove();
+    });
+    if (!editing) {
+        const defaultCurrency = $('#modalForm select[name=currency]');
+        defaultCurrency?.addEventListener('change', () => {
+            const row = rowsWrap?.querySelector('[data-cash-row][data-new="1"]');
+            const amount = row?.querySelector('[data-cash-amount]');
+            if (row && !String(amount?.value || '').trim()) {
+                row.querySelector('[data-cash-currency]').value = defaultCurrency.value;
+            }
+        });
+    }
+
     let submitting = false;
     $('#modalForm').addEventListener('submit', async event => {
         event.preventDefault();
@@ -1211,18 +1277,30 @@ function openAccountModal(account = null) {
         const data = formDataObject(event.target);
         if (editing) data.is_active = data.is_active === '1';
         else delete data.is_active;
-        const cashAmount = String(data.cash_amount ?? '').trim();
-        const cashDate = data.cash_date || todayIso();
-        const sameCash = editing && a.cash_date
-            && Number(cashAmount) === Number(a.cash_amount)
-            && cashDate === a.cash_date;
-        if (!cashAmount || sameCash) {
-            delete data.cash_amount;
-            delete data.cash_date;
-        } else {
-            data.cash_amount = cashAmount;
-            data.cash_date = cashDate;
+
+        const cashBalances = [];
+        const seen = new Set();
+        for (const row of $$('[data-cash-row]', rowsWrap)) {
+            const currency = row.querySelector('[data-cash-currency]').value;
+            const amountRaw = String(row.querySelector('[data-cash-amount]').value ?? '').trim();
+            const balanceDate = row.querySelector('[data-cash-date]').value || todayIso();
+            if (!amountRaw) continue;
+            const amount = Number(amountRaw);
+            if (!Number.isFinite(amount)) {
+                return toast('现金余额应为数字', 'error');
+            }
+            if (seen.has(currency)) {
+                return toast(`币种 ${currency} 重复，请合并为一行`, 'error');
+            }
+            seen.add(currency);
+            const old = originalByCurrency.get(currency);
+            if (old && Number(old.amount) === amount && old.balance_date === balanceDate) continue;
+            cashBalances.push({ currency, amount, balance_date: balanceDate });
         }
+        if (cashBalances.length) data.cash_balances = cashBalances;
+        delete data.cash_amount;
+        delete data.cash_date;
+
         submitting = true;
         const submitBtn = event.target.querySelector('button[type=submit]');
         if (submitBtn) submitBtn.disabled = true;

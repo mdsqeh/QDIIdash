@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS wm_account_balance (
     currency     TEXT NOT NULL DEFAULT 'CNY',
     source       TEXT,
     created_at   TEXT NOT NULL,
-    UNIQUE(account_id, balance_date)
+    UNIQUE(account_id, balance_date, currency)
 );
 CREATE INDEX IF NOT EXISTS idx_wm_account_balance
     ON wm_account_balance (account_id, balance_date);
@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS wm_transaction (
     currency     TEXT NOT NULL,
     fx_rate      REAL NOT NULL DEFAULT 1,
     split_ratio  REAL,
+    cash_adjusted INTEGER NOT NULL DEFAULT 0,
     source       TEXT NOT NULL DEFAULT 'manual',
     dca_order_id INTEGER,
     import_hash  TEXT UNIQUE,
@@ -183,13 +184,61 @@ def _ensure_column(conn, table, column, ddl):
         conn.execute(f'ALTER TABLE {table} ADD COLUMN {column} {ddl}')
 
 
+def _migrate_account_balance(conn):
+    """Allow several currencies on the same account/date."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='wm_account_balance'"
+    ).fetchone()
+    if not row:
+        return
+    schema_sql = ''.join((row['sql'] or '').lower().split())
+    if 'unique(account_id,balance_date,currency)' in schema_sql:
+        return
+
+    conn.commit()
+    conn.execute('BEGIN IMMEDIATE')
+    try:
+        conn.execute('DROP TABLE IF EXISTS wm_account_balance_new')
+        conn.execute("""
+            CREATE TABLE wm_account_balance_new (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id   INTEGER NOT NULL REFERENCES wm_account(id),
+                balance_date TEXT NOT NULL,
+                amount       REAL NOT NULL,
+                currency     TEXT NOT NULL DEFAULT 'CNY',
+                source       TEXT,
+                created_at   TEXT NOT NULL,
+                UNIQUE(account_id, balance_date, currency)
+            )
+        """)
+        conn.execute("""
+            INSERT OR IGNORE INTO wm_account_balance_new
+                (id, account_id, balance_date, amount, currency, source, created_at)
+            SELECT id, account_id, balance_date, amount,
+                   COALESCE(currency, 'CNY'), source, created_at
+            FROM wm_account_balance
+        """)
+        conn.execute('DROP TABLE wm_account_balance')
+        conn.execute('ALTER TABLE wm_account_balance_new RENAME TO wm_account_balance')
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_wm_account_balance
+                ON wm_account_balance (account_id, balance_date)
+        """)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def init_wealth_db(path=None):
     conn = connect(path)
     try:
         conn.executescript(SCHEMA)
         # Future migrations go here. Kept explicit so upgrades stay predictable.
         _ensure_column(conn, 'wm_transaction', 'split_ratio', 'REAL')
+        _ensure_column(conn, 'wm_transaction', 'cash_adjusted', 'INTEGER NOT NULL DEFAULT 0')
         _ensure_column(conn, 'wm_asset', 'last_error', 'TEXT')
+        _migrate_account_balance(conn)
         count = conn.execute('SELECT COUNT(*) AS c FROM wm_account').fetchone()['c']
         if not count:
             conn.execute(

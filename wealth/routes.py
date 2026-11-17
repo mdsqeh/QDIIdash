@@ -15,6 +15,7 @@ from flask import (Blueprint, Response, current_app, jsonify, redirect,
 from werkzeug.exceptions import HTTPException
 
 from . import dca, prices
+from .cash import apply_transaction_cash, reverse_transaction_cash
 from .db import DB_PATH, SHANGHAI_TZ, close_db, connect, get_db, iso, now_iso, today_str
 from .portfolio import (account_cash, build_history, build_positions, build_summary, parse_date)
 from .schema import init_wealth_db
@@ -169,14 +170,55 @@ def _cash_fields(data):
     return amount, balance_date
 
 
+def _cash_balance_items(data):
+    """Parse optional per-currency manual cash rows.
+
+    Blank amounts are ignored so a GUI can keep an empty row without clearing
+    an existing balance.  ``0`` deliberately clears a currency.
+    """
+    raw = data.get('cash_balances')
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError('现金余额格式无效')
+    items = []
+    default_currency = str(data.get('currency') or 'CNY').upper()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise ValueError('现金余额格式无效')
+        raw_amount = entry.get('amount')
+        if raw_amount is None or str(raw_amount).strip() == '':
+            continue
+        try:
+            amount = float(raw_amount)
+        except (TypeError, ValueError):
+            raise ValueError('现金余额应为数字')
+        if not math.isfinite(amount):
+            raise ValueError('现金余额应为有限数字')
+        currency = str(entry.get('currency') or default_currency).strip().upper()
+        if len(currency) != 3 or not currency.isalpha():
+            raise ValueError('现金币种应为 3 位字母代码')
+        raw_date = str(entry.get('balance_date') or entry.get('cash_date') or '').strip()
+        if raw_date:
+            try:
+                balance_date = iso(parse_date(raw_date))
+            except (TypeError, ValueError):
+                raise ValueError('现金余额日期格式无效')
+        else:
+            balance_date = today_str()
+        if balance_date > today_str():
+            raise ValueError('现金余额日期不能晚于今天')
+        items.append((currency, amount, balance_date))
+    return items
+
+
 def _upsert_account_cash(conn, account_id, amount, balance_date, currency):
     conn.execute(
         """INSERT INTO wm_account_balance
            (account_id, balance_date, amount, currency, source, created_at)
            VALUES (?, ?, ?, ?, 'manual', ?)
-           ON CONFLICT(account_id, balance_date) DO UPDATE SET
+           ON CONFLICT(account_id, balance_date, currency) DO UPDATE SET
              amount = excluded.amount,
-             currency = excluded.currency,
              source = excluded.source,
              created_at = excluded.created_at""",
         (account_id, balance_date, amount, currency, now_iso()),
@@ -373,7 +415,7 @@ def _principal_before(conn, asset_id, on_date, exclude_id=None, account_id=None)
     return principal
 
 
-def _create_transaction(conn, data, source='manual', import_hash=None):
+def _create_transaction(conn, data, source='manual', import_hash=None, affect_cash=True):
     asset = _asset(conn, int(data.get('asset_id') or 0))
     if not asset:
         raise ValueError('资产不存在')
@@ -387,6 +429,7 @@ def _create_transaction(conn, data, source='manual', import_hash=None):
         account = _account(conn, account_id)
         if not account:
             raise ValueError('账户不存在')
+    cash_adjusted = 1 if affect_cash and account_id else 0
     provided_currency = str(data.get('currency') or '').upper()
     if provided_currency and provided_currency != str(asset.get('currency') or 'CNY').upper():
         raise ValueError(f'交易币种 {provided_currency} 与资产币种 {asset.get("currency")} 不一致')
@@ -452,14 +495,19 @@ def _create_transaction(conn, data, source='manual', import_hash=None):
     cur = conn.execute(
         """INSERT OR IGNORE INTO wm_transaction
            (asset_id, account_id, type, trade_date, units, price, amount, fee, currency,
-            fx_rate, split_ratio, source, import_hash, note, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            fx_rate, split_ratio, cash_adjusted, source, import_hash, note, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (asset['id'], account_id, tx_type, iso(trade_date), units, price, amount, fee,
-         currency, fx, split_ratio if tx_type == 'split' else None, source,
-         import_hash, data.get('note'), now_iso()),
+         currency, fx, split_ratio if tx_type == 'split' else None, cash_adjusted,
+         source, import_hash, data.get('note'), now_iso()),
     )
     if cur.rowcount == 0:
         return None
+    if cash_adjusted:
+        apply_transaction_cash(conn, {
+            'account_id': account_id, 'type': tx_type, 'currency': currency,
+            'amount': amount, 'fee': fee, 'trade_date': trade_date,
+        })
     return cur.lastrowid
 
 
@@ -678,6 +726,12 @@ def api_asset(asset_id):
         if tx and not force:
             return _error(f'该资产有 {tx} 笔交易；确认删除请使用强制删除', 409)
         if tx:
+            adjusted = conn.execute(
+                'SELECT * FROM wm_transaction WHERE asset_id = ? AND cash_adjusted = 1',
+                (asset_id,),
+            ).fetchall()
+            for old_tx in adjusted:
+                reverse_transaction_cash(conn, old_tx)
             conn.execute('DELETE FROM wm_transaction WHERE asset_id = ?', (asset_id,))
         conn.execute('DELETE FROM wm_price WHERE asset_id = ?', (asset_id,))
         conn.execute('DELETE FROM wm_asset WHERE id = ?', (asset_id,))
@@ -822,16 +876,31 @@ def api_accounts():
                FROM wm_account a ORDER BY a.is_active DESC, a.id"""
         ).fetchall()
         cash_rows, _ = account_cash(conn)
-        cash_by_account = {r['account_id']: r for r in cash_rows}
+        cash_by_account = {}
+        for cash in cash_rows:
+            cash_by_account.setdefault(cash['account_id'], []).append(cash)
         result = []
         for row in rows:
             item = dict(row)
-            cash = cash_by_account.get(row['id'])
-            item['cash_amount'] = cash['amount'] if cash else 0.0
-            item['cash_cny'] = round(cash['cny_value'], 2) if cash else 0.0
-            item['cash_currency'] = cash['currency'] if cash else (row['currency'] or 'CNY')
-            item['cash_date'] = cash['balance_date'] if cash else None
-            item['cash_fx_missing'] = bool(cash['fx_missing']) if cash else False
+            balances = cash_by_account.get(row['id'], [])
+            item['cash_balances'] = [{
+                'currency': cash['currency'],
+                'amount': cash['amount'],
+                'balance_date': cash['balance_date'],
+                'cny_value': round(cash['cny_value'], 2),
+                'fx_rate': cash['fx_rate'],
+                'fx_missing': cash['fx_missing'],
+            } for cash in balances]
+            item['cash_cny'] = round(sum(cash['cny_value'] for cash in balances), 2)
+            primary = next(
+                (cash for cash in balances
+                 if cash['currency'] == (row['currency'] or 'CNY').upper()),
+                balances[0] if balances else None,
+            )
+            item['cash_amount'] = primary['amount'] if primary else 0.0
+            item['cash_currency'] = primary['currency'] if primary else (row['currency'] or 'CNY')
+            item['cash_date'] = primary['balance_date'] if primary else None
+            item['cash_fx_missing'] = any(cash['fx_missing'] for cash in balances)
             result.append(item)
         return jsonify(result)
     data = _body()
@@ -843,7 +912,11 @@ def api_accounts():
         return _error('账户币种应为 3 位字母代码')
     broker = str(data.get('broker') or '').strip() or None
     try:
-        cash_amount, cash_date = _cash_fields(data)
+        cash_items = _cash_balance_items(data)
+        if 'cash_balances' in data:
+            cash_amount, cash_date = None, None
+        else:
+            cash_amount, cash_date = _cash_fields(data)
     except ValueError as exc:
         return _error(str(exc))
     try:
@@ -851,6 +924,8 @@ def api_accounts():
             'INSERT INTO wm_account (name, broker, currency, created_at) VALUES (?, ?, ?, ?)',
             (name, broker, currency, now_iso()),
         )
+        for cash_currency, amount, balance_date in cash_items:
+            _upsert_account_cash(conn, cur.lastrowid, amount, balance_date, cash_currency)
         if cash_amount is not None:
             _upsert_account_cash(conn, cur.lastrowid, cash_amount, cash_date, currency)
         conn.commit()
@@ -892,7 +967,11 @@ def api_account(account_id):
     is_active = 1 if _flag(data.get('is_active', account['is_active']),
                            bool(account['is_active'])) else 0
     try:
-        cash_amount, cash_date = _cash_fields(data)
+        cash_items = _cash_balance_items(data)
+        if 'cash_balances' in data:
+            cash_amount, cash_date = None, None
+        else:
+            cash_amount, cash_date = _cash_fields(data)
     except ValueError as exc:
         return _error(str(exc))
     try:
@@ -900,11 +979,8 @@ def api_account(account_id):
             'UPDATE wm_account SET name=?, broker=?, currency=?, is_active=? WHERE id=?',
             (name, broker, currency, is_active, account_id),
         )
-        if currency != (account['currency'] or 'CNY').upper():
-            conn.execute(
-                'UPDATE wm_account_balance SET currency = ? WHERE account_id = ?',
-                (currency, account_id),
-            )
+        for cash_currency, amount, balance_date in cash_items:
+            _upsert_account_cash(conn, account_id, amount, balance_date, cash_currency)
         if cash_amount is not None:
             _upsert_account_cash(conn, account_id, cash_amount, cash_date, currency)
         conn.commit()
@@ -985,6 +1061,8 @@ def api_transaction(tx_id):
     if row['source'] == 'dca':
         return _error('定投生成的交易请在定投页操作，不能直接编辑', 409)
     if request.method == 'DELETE':
+        if row['cash_adjusted']:
+            reverse_transaction_cash(conn, row)
         conn.execute('DELETE FROM wm_transaction WHERE id = ?', (tx_id,))
         conn.commit()
         return jsonify({'ok': True})
@@ -998,12 +1076,22 @@ def api_transaction(tx_id):
     asset = _asset(conn, int(row['asset_id']))
     if not asset:
         return _error('资产不存在')
+    old_adjusted = bool(row['cash_adjusted'])
+    new_account = data.get('account_id')
+    enable_cash = old_adjusted or (
+        (row['source'] or 'manual') == 'manual'
+        and row['account_id'] is None
+        and new_account not in (None, '', 0, '0')
+    )
     try:
         # Re-create through the same validation/FX path as a manual entry.
-        # Rollback restores the old row if validation fails.
+        # Rollback restores the old row and cash adjustment if validation fails.
+        if old_adjusted:
+            reverse_transaction_cash(conn, row)
         conn.execute('DELETE FROM wm_transaction WHERE id = ?', (tx_id,))
         new_id = _create_transaction(
-            conn, data, source=row['source'] or 'manual', import_hash=row['import_hash'])
+            conn, data, source=row['source'] or 'manual',
+            import_hash=row['import_hash'], affect_cash=enable_cash)
         if new_id is None:
             raise ValueError('无法保存交易（可能与已有记录重复）')
         conn.commit()
@@ -1720,9 +1808,8 @@ def api_import_ghostfolio():
                     """INSERT INTO wm_account_balance
                        (account_id, balance_date, amount, currency, source, created_at)
                        VALUES (?, ?, ?, ?, 'ghostfolio', ?)
-                       ON CONFLICT(account_id, balance_date) DO UPDATE SET
+                       ON CONFLICT(account_id, balance_date, currency) DO UPDATE SET
                          amount = excluded.amount,
-                         currency = excluded.currency,
                          source = excluded.source""",
                     (local_id, balance_date, _num(balance.get('value'), 0),
                      currency, now_iso()),
@@ -1785,7 +1872,8 @@ def api_import_ghostfolio():
                 payload['fx_rate'] = fx_map[fx_key]
             try:
                 tx_id = _create_transaction(
-                    conn, payload, source='import', import_hash=row['import_hash'])
+                    conn, payload, source='import', import_hash=row['import_hash'],
+                    affect_cash=False)
                 if tx_id:
                     imported += 1
             except Exception as exc:
@@ -1878,7 +1966,7 @@ def api_import_csv():
                 }
                 if currency and currency != 'CNY' and fx_key in fx_map:
                     payload['fx_rate'] = fx_map[fx_key]
-                _create_transaction(conn, payload, source='import')
+                _create_transaction(conn, payload, source='import', affect_cash=False)
                 imported += 1
             except Exception as exc:
                 errors.append(f'{row.get("symbol")} {row.get("trade_date")}: {exc}')

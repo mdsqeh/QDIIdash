@@ -5,6 +5,7 @@ import threading
 from datetime import date, timedelta
 
 from . import prices
+from .cash import apply_transaction_cash
 from .db import connect, iso, now_iso, today_str
 from .portfolio import parse_date, plan_position, xirr
 
@@ -174,15 +175,21 @@ def _amount_in_asset_currency(conn, amount, amount_currency, asset_currency, on_
 
 def _insert_dca_transaction(conn, order, plan, asset, trade_date, amount, fee, units, price,
                             currency, fx_rate_value, note):
+    cash_adjusted = 1 if plan.get('account_id') else 0
     cur = conn.execute(
         """INSERT INTO wm_transaction
            (asset_id, account_id, type, trade_date, units, price, amount, fee, currency,
-            fx_rate, source, dca_order_id, note, created_at)
-           VALUES (?, ?, 'buy', ?, ?, ?, ?, ?, ?, ?, 'dca', ?, ?, ?)""",
+            fx_rate, cash_adjusted, source, dca_order_id, note, created_at)
+           VALUES (?, ?, 'buy', ?, ?, ?, ?, ?, ?, ?, ?, 'dca', ?, ?, ?)""",
         (asset['id'], plan.get('account_id'), iso(trade_date), units, price, amount, fee,
-         currency, fx_rate_value, order['id'], note, now_iso()),
+         currency, fx_rate_value, cash_adjusted, order['id'], note, now_iso()),
     )
-    return cur.lastrowid
+    tx_id = cur.lastrowid
+    apply_transaction_cash(conn, {
+        'account_id': plan.get('account_id'), 'type': 'buy', 'currency': currency,
+        'amount': amount, 'fee': fee, 'trade_date': trade_date,
+    })
+    return tx_id
 
 
 def _fail_order(conn, order_id, message):

@@ -205,6 +205,68 @@ class MathsTests(WealthTestBase):
         self.assertEqual(rows[0]['account_id'], account_id)
         self.assertEqual(rows[0]['currency'], 'CNY')
 
+    def test_multi_currency_cash_on_same_account_date(self):
+        from wealth.routes import _upsert_account_cash
+        account_id = self.add_account('多币种现金')
+        _upsert_account_cash(self.conn, account_id, 200, '2026-11-17', 'CNY')
+        _upsert_account_cash(self.conn, account_id, 100, '2026-11-17', 'USD')
+        self.conn.execute(
+            """INSERT INTO wm_fx_rate (rate_date, currency, cny_rate, source)
+               VALUES ('2026-11-17', 'USD', 7.0, 'test')"""
+        )
+        self.conn.commit()
+        rows, total = portfolio.account_cash(self.conn, '2026-11-17')
+        self.assertEqual(len(rows), 2)
+        self.assertAlmostEqual(total, 900.0)
+        self.assertEqual({r['currency'] for r in rows}, {'CNY', 'USD'})
+
+    def test_buy_and_sell_adjust_account_cash(self):
+        from wealth.routes import _create_transaction, _upsert_account_cash
+        from wealth.cash import reverse_transaction_cash
+        account_id = self.add_account('交易现金')
+        asset_id = self.add_asset()
+        _upsert_account_cash(self.conn, account_id, 1000, '2026-11-16', 'CNY')
+        buy_id = _create_transaction(self.conn, {
+            'asset_id': asset_id, 'account_id': account_id, 'type': 'buy',
+            'trade_date': '2026-11-16', 'units': 10, 'price': 10,
+            'amount': 100, 'fee': 5, 'currency': 'CNY',
+        })
+        rows, total = portfolio.account_cash(self.conn, '2026-11-16')
+        self.assertAlmostEqual(total, 895.0)
+        self.assertEqual(
+            self.conn.execute('SELECT cash_adjusted FROM wm_transaction WHERE id = ?',
+                              (buy_id,)).fetchone()['cash_adjusted'], 1)
+
+        _create_transaction(self.conn, {
+            'asset_id': asset_id, 'account_id': account_id, 'type': 'sell',
+            'trade_date': '2026-11-16', 'units': 2, 'price': 10,
+            'amount': 20, 'fee': 1, 'currency': 'CNY',
+        })
+        rows, total = portfolio.account_cash(self.conn, '2026-11-16')
+        self.assertAlmostEqual(total, 914.0)
+
+        buy = self.conn.execute('SELECT * FROM wm_transaction WHERE id = ?',
+                                (buy_id,)).fetchone()
+        reverse_transaction_cash(self.conn, buy)
+        rows, total = portfolio.account_cash(self.conn, '2026-11-16')
+        self.assertAlmostEqual(total, 1019.0)
+
+    def test_imported_transaction_does_not_touch_cash(self):
+        from wealth.routes import _create_transaction, _upsert_account_cash
+        account_id = self.add_account('导入现金')
+        asset_id = self.add_asset()
+        _upsert_account_cash(self.conn, account_id, 1000, '2026-11-16', 'CNY')
+        tx_id = _create_transaction(self.conn, {
+            'asset_id': asset_id, 'account_id': account_id, 'type': 'buy',
+            'trade_date': '2026-11-16', 'units': 10, 'price': 10,
+            'amount': 100, 'fee': 0, 'currency': 'CNY',
+        }, source='import', import_hash='test-import-hash', affect_cash=False)
+        rows, total = portfolio.account_cash(self.conn, '2026-11-16')
+        self.assertAlmostEqual(total, 1000.0)
+        self.assertEqual(
+            self.conn.execute('SELECT cash_adjusted FROM wm_transaction WHERE id = ?',
+                              (tx_id,)).fetchone()['cash_adjusted'], 0)
+
     def test_cash_fields_validation(self):
         from wealth.routes import _cash_fields
         self.assertEqual(_cash_fields({}), (None, None))
@@ -333,6 +395,24 @@ class DcaTests(WealthTestBase):
         self.assertAlmostEqual(stats['invested'], 1000.0)
         self.assertAlmostEqual(stats['value'], 1100.0)
         self.assertAlmostEqual(stats['pnl'], 100.0)
+
+    def test_dca_buy_reduces_account_cash(self):
+        from wealth.routes import _upsert_account_cash
+        asset_id = self.add_asset()
+        account_id = self.add_account('定投账户')
+        self.add_price(asset_id, '2026-01-02', 10)
+        plan_id = self.add_plan(asset_id, amount=1000, start_date='2026-01-01',
+                                account_id=account_id)
+        _upsert_account_cash(self.conn, account_id, 2000, '2026-01-01', 'CNY')
+        self.conn.commit()
+        dca.generate_orders(self.conn, today='2026-01-02', plan_id=plan_id)
+        dca.settle_orders(self.conn, today='2026-01-02')
+        rows, total = portfolio.account_cash(self.conn, '2026-01-02')
+        self.assertAlmostEqual(total, 1000.0)
+        tx = self.conn.execute(
+            'SELECT cash_adjusted FROM wm_transaction WHERE dca_order_id IS NOT NULL'
+        ).fetchone()
+        self.assertEqual(tx['cash_adjusted'], 1)
 
     def test_fund_fee_and_share_math(self):
         asset_id = self.add_asset(
@@ -669,6 +749,157 @@ class ImportAndParsingTests(WealthTestBase):
             'symbol': '0700.HK', 'market': 'HK', 'currency': 'HKD', 'name': '腾讯',
         })
         self.assertEqual(hk['symbol'], '0700')
+
+
+class SchemaMigrationTests(unittest.TestCase):
+    def test_old_balance_table_allows_multiple_currencies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'old-schema.db')
+            conn = connect(path)
+            conn.executescript("""
+                CREATE TABLE wm_account (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name       TEXT NOT NULL,
+                    broker     TEXT,
+                    currency   TEXT NOT NULL DEFAULT 'CNY',
+                    is_active  INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(name)
+                );
+                CREATE TABLE wm_account_balance (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id   INTEGER NOT NULL REFERENCES wm_account(id),
+                    balance_date TEXT NOT NULL,
+                    amount       REAL NOT NULL,
+                    currency     TEXT NOT NULL DEFAULT 'CNY',
+                    source       TEXT,
+                    created_at   TEXT NOT NULL,
+                    UNIQUE(account_id, balance_date)
+                );
+            """)
+            conn.execute(
+                "INSERT INTO wm_account (name, currency, created_at) VALUES ('旧账户', 'CNY', '2026-01-01')")
+            conn.execute(
+                """INSERT INTO wm_account_balance
+                   (account_id, balance_date, amount, currency, source, created_at)
+                   VALUES (1, '2026-01-01', 100, 'CNY', 'old', '2026-01-01')""")
+            conn.commit()
+            conn.close()
+
+            init_wealth_db(path)
+            conn = connect(path)
+            try:
+                conn.execute(
+                    """INSERT INTO wm_account_balance
+                       (account_id, balance_date, amount, currency, source, created_at)
+                       VALUES (1, '2026-01-01', 50, 'USD', 'test', '2026-01-01')""")
+                conn.commit()
+                rows = conn.execute(
+                    'SELECT currency, amount FROM wm_account_balance ORDER BY currency'
+                ).fetchall()
+                self.assertEqual([(r['currency'], r['amount']) for r in rows],
+                                 [('CNY', 100.0), ('USD', 50.0)])
+                columns = {r['name'] for r in conn.execute(
+                    'PRAGMA table_info(wm_transaction)').fetchall()}
+                self.assertIn('cash_adjusted', columns)
+            finally:
+                conn.close()
+
+
+class RoutesApiTests(unittest.TestCase):
+    def setUp(self):
+        from flask import Flask
+        from wealth.routes import register
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self._tmp.name, 'wealth-api-test.db')
+        self._old_password = os.environ.pop('WM_PASSWORD', None)
+        self.app = Flask(__name__)
+        self.app.config['TESTING'] = True
+        self.app.config['SECRET_KEY'] = 'test'
+        self.app.config['WM_DB_PATH'] = self.db_path
+        register(self.app)
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        if self._old_password is not None:
+            os.environ['WM_PASSWORD'] = self._old_password
+        self._tmp.cleanup()
+
+    def _create_asset(self):
+        response = self.client.post('/api/wm/assets', json={
+            'symbol': 'API-CASH', 'market': 'MANUAL', 'asset_class': 'stock',
+            'name': 'API 现金测试', 'currency': 'CNY', 'quote_source': 'manual',
+        })
+        self.assertEqual(response.status_code, 201, response.get_json())
+        return response.get_json()['id']
+
+    def test_account_multi_currency_api(self):
+        today = today_str()
+        response = self.client.post('/api/wm/accounts', json={
+            'name': 'API 多币种', 'currency': 'CNY',
+            'cash_balances': [
+                {'currency': 'CNY', 'amount': 1000, 'balance_date': today},
+                {'currency': 'USD', 'amount': 100, 'balance_date': today},
+            ],
+        })
+        self.assertEqual(response.status_code, 201, response.get_json())
+        account_id = response.get_json()['id']
+
+        accounts = self.client.get('/api/wm/accounts').get_json()
+        account = next(a for a in accounts if a['id'] == account_id)
+        self.assertEqual({b['currency']: b['amount'] for b in account['cash_balances']},
+                         {'CNY': 1000.0, 'USD': 100.0})
+
+        response = self.client.put(f'/api/wm/accounts/{account_id}', json={
+            'name': 'API 多币种', 'currency': 'CNY', 'is_active': True,
+            'cash_balances': [
+                {'currency': 'CNY', 'amount': 500, 'balance_date': today},
+                {'currency': 'USD', 'amount': 50, 'balance_date': today},
+                {'currency': 'HKD', 'amount': 20, 'balance_date': today},
+            ],
+        })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        accounts = self.client.get('/api/wm/accounts').get_json()
+        account = next(a for a in accounts if a['id'] == account_id)
+        self.assertEqual({b['currency']: b['amount'] for b in account['cash_balances']},
+                         {'CNY': 500.0, 'USD': 50.0, 'HKD': 20.0})
+
+    def test_transaction_api_adjusts_and_restores_cash(self):
+        asset_id = self._create_asset()
+        today = today_str()
+        response = self.client.post('/api/wm/accounts', json={
+            'name': 'API 交易现金', 'currency': 'CNY',
+            'cash_balances': [{'currency': 'CNY', 'amount': 1000, 'balance_date': today}],
+        })
+        account_id = response.get_json()['id']
+
+        response = self.client.post('/api/wm/transactions', json={
+            'asset_id': asset_id, 'account_id': account_id, 'type': 'buy',
+            'trade_date': today, 'units': 10, 'price': 10, 'amount': 100,
+            'fee': 5, 'currency': 'CNY',
+        })
+        self.assertEqual(response.status_code, 201, response.get_json())
+        tx_id = response.get_json()['id']
+        account = next(a for a in self.client.get('/api/wm/accounts').get_json()
+                       if a['id'] == account_id)
+        self.assertAlmostEqual(account['cash_balances'][0]['amount'], 895.0)
+
+        response = self.client.put(f'/api/wm/transactions/{tx_id}', json={
+            'asset_id': asset_id, 'account_id': account_id, 'type': 'buy',
+            'trade_date': today, 'units': 20, 'price': 10, 'amount': 200,
+            'fee': 5, 'currency': 'CNY',
+        })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        tx_id = response.get_json()['id']
+        account = next(a for a in self.client.get('/api/wm/accounts').get_json()
+                       if a['id'] == account_id)
+        self.assertAlmostEqual(account['cash_balances'][0]['amount'], 795.0)
+
+        response = self.client.delete(f'/api/wm/transactions/{tx_id}')
+        self.assertEqual(response.status_code, 200, response.get_json())
+        account = next(a for a in self.client.get('/api/wm/accounts').get_json()
+                       if a['id'] == account_id)
+        self.assertAlmostEqual(account['cash_balances'][0]['amount'], 1000.0)
 
 
 if __name__ == '__main__':

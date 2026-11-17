@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>财富管理 · 登录</title>
+<link rel="stylesheet" href="/static/wealth.css">
+</head>
+<body class="login-body">
+<div class="login-card">
+    <div class="login-brand">
+        <div class="login-mark">¥</div>
+        <div>
+            <h1>个人财富管理</h1>
+            <p>全资产账本 · 定投自动记账</p>
+        </div>
+    </div>
+    {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+    {% if not configured %}
+    <div class="alert alert-warn">
+        服务端未配置 <code>WM_PASSWORD</code>。请先设置环境变量后再从外网访问；本机访问不受影响。
+    </div>
+    {% else %}
+    <form method="post" action="{{ url_for('wealth.login', next=request.args.get('next')) }}">
+        <label class="field">
+            <span>访问密码</span>
+            <input type="password" name="password" autofocus autocomplete="current-password" placeholder="请输入 WM_PASSWORD">
+        </label>
+        <button class="btn btn-primary btn-block" type="submit">进入财富管理</button>
+    </form>
+    {% endif %}
+    <a class="login-back" href="/">← 返回 QDII 看板</a>
+</div>
+</body>
+</html>

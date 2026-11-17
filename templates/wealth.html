@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>个人财富管理 · QDIIdash</title>
+<link rel="stylesheet" href="/static/wealth.css">
+<script src="/static/vendor/echarts.min.js"></script>
+</head>
+<body>
+<div class="container">
+    <header class="topbar">
+        <div class="brand">
+            <div class="brand-mark">¥</div>
+            <div>
+                <h1>个人财富管理 <span class="badge">自动定投</span></h1>
+                <p class="sub">全资产账本 · 人民币视角 · <span id="asOf">-</span></p>
+            </div>
+        </div>
+        <div class="top-actions">
+            <a class="btn btn-ghost" href="/">QDII 看板</a>
+            <button class="btn btn-ghost" id="syncBtn" type="button">同步行情</button>
+            <button class="btn btn-ghost" id="logoutBtn" type="button">退出</button>
+        </div>
+    </header>
+
+    <section class="summary-grid">
+        <div class="metric metric-main">
+            <span class="metric-label">总资产 (CNY)</span>
+            <strong id="mTotal">-</strong>
+            <small id="mTotalSub">-</small>
+        </div>
+        <div class="metric">
+            <span class="metric-label">净投入</span>
+            <strong id="mNet">-</strong>
+            <small>买入本金 − 赎回本金</small>
+        </div>
+        <div class="metric">
+            <span class="metric-label">累计盈亏</span>
+            <strong id="mPnl">-</strong>
+            <small id="mPnlSub">-</small>
+        </div>
+        <div class="metric">
+            <span class="metric-label">今日 / 最新交易日盈亏</span>
+            <strong id="mToday">-</strong>
+            <small>按最新价与上一交易日</small>
+        </div>
+        <div class="metric">
+            <span class="metric-label">年化收益 XIRR</span>
+            <strong id="mXirr">-</strong>
+            <small>含全部现金流</small>
+        </div>
+    </section>
+
+    <nav class="tabs" id="tabs">
+        <button class="tab active" data-tab="overview">总览</button>
+        <button class="tab" data-tab="holdings">持仓</button>
+        <button class="tab" data-tab="dca">定投</button>
+        <button class="tab" data-tab="transactions">交易</button>
+        <button class="tab" data-tab="assets">资产</button>
+        <button class="tab" data-tab="reports">报表</button>
+    </nav>
+
+    <section class="panel active" id="tab-overview">
+        <div class="grid-2">
+            <div class="card">
+                <div class="card-head">
+                    <h2>资产配置</h2>
+                    <select id="allocBy" class="mini-select">
+                        <option value="asset_class">按类别</option>
+                        <option value="market">按市场</option>
+                        <option value="currency">按币种</option>
+                        <option value="account">按账户</option>
+                    </select>
+                </div>
+                <div class="chart" id="allocChart"></div>
+            </div>
+            <div class="card">
+                <div class="card-head">
+                    <h2>资产走势</h2>
+                    <div class="range-btns" id="rangeBtns">
+                        <button data-range="1m">1月</button>
+                        <button data-range="3m">3月</button>
+                        <button data-range="6m">6月</button>
+                        <button data-range="1y" class="active">1年</button>
+                        <button data-range="3y">3年</button>
+                        <button data-range="all">全部</button>
+                    </div>
+                </div>
+                <div class="chart chart-tall" id="historyChart"></div>
+            </div>
+        </div>
+        <div class="grid-2">
+            <div class="card">
+                <div class="card-head">
+                    <h2>近期定投</h2>
+                    <button class="link-btn" data-tab-jump="dca">管理 →</button>
+                </div>
+                <div id="upcomingList" class="list"></div>
+            </div>
+            <div class="card">
+                <div class="card-head"><h2>待处理 / 同步</h2></div>
+                <div id="statusBox" class="list"></div>
+            </div>
+        </div>
+    </section>
+
+    <section class="panel" id="tab-holdings">
+        <div class="toolbar">
+            <button class="btn btn-primary" id="addTxFromHoldings" type="button">+ 记一笔</button>
+            <span class="muted" id="holdingsHint"></span>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead><tr>
+                    <th>资产</th><th>市场</th><th class="num">数量 / 本金</th><th class="num">均价</th>
+                    <th class="num">现价</th><th class="num">市值 (CNY)</th><th class="num">累计盈亏</th>
+                    <th class="num">最新日</th><th class="num">占比</th><th></th>
+                </tr></thead>
+                <tbody id="holdingsBody"></tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="panel" id="tab-dca">
+        <div class="toolbar">
+            <button class="btn btn-primary" id="addPlanBtn" type="button">+ 新建定投</button>
+            <span class="muted">到期自动按净值/收盘价入账，无需确认。</span>
+        </div>
+        <div id="planList" class="plan-grid"></div>
+        <div class="card">
+            <div class="card-head">
+                <h2>执行记录</h2>
+                <select id="orderStatusFilter" class="mini-select">
+                    <option value="">全部状态</option>
+                    <option value="awaiting_price">等价格</option>
+                    <option value="filled">已入账</option>
+                    <option value="skipped">已跳过</option>
+                    <option value="failed">失败</option>
+                </select>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead><tr>
+                        <th>计划日</th><th>成交日</th><th>计划 / 资产</th><th class="num">金额</th>
+                        <th class="num">价格</th><th class="num">份额</th><th>状态</th><th>说明</th><th></th>
+                    </tr></thead>
+                    <tbody id="ordersBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <section class="panel" id="tab-transactions">
+        <div class="toolbar toolbar-wrap">
+            <select id="txAssetFilter" class="mini-select"></select>
+            <select id="txTypeFilter" class="mini-select">
+                <option value="">全部类型</option>
+                <option value="buy">买入</option>
+                <option value="sell">卖出</option>
+                <option value="dividend">分红</option>
+                <option value="reinvest">分红再投</option>
+                <option value="interest">利息</option>
+                <option value="fee">费用</option>
+                <option value="split">拆分</option>
+            </select>
+            <input type="date" id="txStart" class="mini-input">
+            <span class="muted">至</span>
+            <input type="date" id="txEnd" class="mini-input">
+            <button class="btn btn-ghost" id="filterTx" type="button">筛选</button>
+            <button class="btn btn-primary" id="addTxBtn" type="button">+ 记一笔</button>
+            <a class="btn btn-ghost" href="/api/wm/export?format=csv">导出 CSV</a>
+            <a class="btn btn-ghost" href="/api/wm/export">导出 JSON</a>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead><tr>
+                    <th>日期</th><th>资产</th><th>类型</th><th class="num">数量</th><th class="num">价格</th>
+                    <th class="num">金额</th><th class="num">费用</th><th>来源</th><th>账户</th><th>备注</th><th></th>
+                </tr></thead>
+                <tbody id="txBody"></tbody>
+            </table>
+        </div>
+        <div class="pager" id="txPager"></div>
+    </section>
+
+    <section class="panel" id="tab-assets">
+        <div class="toolbar toolbar-wrap">
+            <button class="btn btn-primary" id="addAssetBtn" type="button">+ 添加资产</button>
+            <button class="btn btn-ghost" id="importBtn" type="button">导入 Ghostfolio JSON</button>
+            <button class="btn btn-ghost" id="importCsvBtn" type="button">导入 CSV</button>
+            <a class="btn btn-ghost" href="/api/wm/import/csv/template">CSV 模板</a>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead><tr>
+                    <th>资产</th><th>市场 / 类别</th><th>行情源</th><th class="num">最新价</th>
+                    <th>价格日期</th><th>状态</th><th></th>
+                </tr></thead>
+                <tbody id="assetsBody"></tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="panel" id="tab-reports">
+        <div class="report-grid">
+            <div class="metric"><span class="metric-label">XIRR</span><strong id="rXirr">-</strong><small>资金加权年化</small></div>
+            <div class="metric"><span class="metric-label">TWR</span><strong id="rTwr">-</strong><small>时间加权，区间内</small></div>
+            <div class="metric"><span class="metric-label">最大回撤</span><strong id="rMdd">-</strong><small>区间内峰值回撤</small></div>
+            <div class="metric"><span class="metric-label">已实现盈亏</span><strong id="rRealized">-</strong><small>卖出 / 分红 / 利息</small></div>
+        </div>
+        <div class="card">
+            <div class="card-head"><h2>月度收益（剔除入金）</h2></div>
+            <div class="chart chart-tall" id="monthlyChart"></div>
+        </div>
+        <div class="card muted-card">
+            <p>说明：TWR / 最大回撤基于当前所选区间的每日估值；XIRR 使用全部现金流与当前市值。定投计划页的收益按该计划买入的份额估算，不扣除计划外的卖出。</p>
+        </div>
+    </section>
+</div>
+
+<div class="modal" id="modalRoot" aria-hidden="true">
+    <div class="modal-panel" role="dialog" aria-modal="true">
+        <div class="modal-head">
+            <h2 id="modalTitle">编辑</h2>
+            <button class="modal-close" id="modalClose" type="button">×</button>
+        </div>
+        <div id="modalBody"></div>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="/static/wealth.js"></script>
+</body>
+</html>

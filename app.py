@@ -19,8 +19,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from fetcher import fetch_all, _fetch_incremental, _fetch_all_codes
 from quota_watcher import check_quotas
+from wealth import register as register_wealth, register_wealth_jobs, startup_catchup
 
 app = Flask(__name__)
+register_wealth(app)
 
 # ── 数据库路径（默认放在项目目录，可用 DATA_DIR 指向持久化目录） ──
 DB_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -704,6 +706,7 @@ def _start_scheduler():
     scheduler.add_job(_do_fetch_incremental, 'cron', hour=21, minute=0, id='daily_incremental')
     scheduler.add_job(_do_check_quota, 'cron', day_of_week='mon-fri', hour='9-19', minute=0, id='quota_check')
     scheduler.add_job(_do_check_quota, 'cron', day_of_week='mon-fri', hour=21, minute=5, id='quota_check_after_fetch')
+    register_wealth_jobs(scheduler)
     scheduler.start()
     print("📅 定时任务已启动：每月1号 21:00 全量采集，每日 21:00 增量更新，额度监控交易日 9:00-19:00 每小时及 21:05")
 
@@ -711,6 +714,7 @@ def _start_scheduler():
 if __name__ == '__main__':
     init_db()
     _start_scheduler()
+    threading.Thread(target=startup_catchup, daemon=True).start()
 
     # 启动时检查数据库是否有数据，有就跳过采集
     with sqlite3.connect(DB_PATH) as conn:

@@ -14,6 +14,7 @@ COPY fetcher.py /app/fetcher.py
 COPY quota_watcher.py /app/quota_watcher.py
 COPY templates /app/templates
 COPY static /app/static
+COPY wealth /app/wealth
 
 EXPOSE 5000
 

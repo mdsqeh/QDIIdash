@@ -11,6 +11,7 @@ Flask + SQLite 后端、纯前端展示的 QDII 基金数据看板。自动采�
 ## 目录
 
 - [功能特性](#功能特性)
+- [个人财富管理](#个人财富管理)
 - [技术栈与目录结构](#技术栈与目录结构)
 - [环境要求](#环境要求)
 - [方式一：本地运行（推荐用于开发/自用）](#方式一本地运行推荐用于开发自用)
@@ -45,6 +46,116 @@ Flask + SQLite 后端、纯前端展示的 QDII 基金数据看板。自动采�
 
 ---
 
+## 个人财富管理
+
+在 QDII 看板基础上增加的个人全资产账本，入口为 **`/wealth`**，与 QDII 共用同一个 Flask 进程和 `qdii.db`（新表统一使用 `wm_` 前缀，不修改原有 QDII 表）。
+
+### 功能
+
+- **多资产**：A 股、港股、美股、场外基金、加密货币、银行理财、手动资产
+- **账本**：买入 / 卖出 / 分红 / 分红再投 / 利息 / 费用 / 拆分，持仓与成本由交易流水实时计算（移动平均成本法）
+- **自动定投**：固定金额，支持每日 / 每周 / 每两周 / 每月；到期自动按交易日收盘价或基金净值入账，**无需确认**
+- **银行理财**：按本金 + 日计提收益估值，支持单利/复利、到期日、利息到账记录
+- **收益分析**：人民币视角的总资产、累计/今日盈亏、XIRR、TWR、最大回撤、资产走势、月度收益、资产配置
+- **导入**：Ghostfolio JSON、CSV；**导出**：JSON / CSV
+- **账户字段**：交易和计划可选择账户，默认自带「默认账户」；更多账户可通过 `/api/wm/accounts` 创建（页面暂未提供账户管理入口）。
+
+> 本功能只做本地记账与行情展示，**不会向任何券商或交易所下单**。
+
+### 访问密码
+
+设置环境变量 `WM_PASSWORD` 后，外网访问 `/wealth` 需要先输入密码。未设置时仅允许本机（`127.0.0.1` / `::1`）访问，外网请求返回 503。
+
+### 定投规则
+
+- `daily`：每个交易日最多投一次；周末/节假日不生成订单，不把多天合并到下一个交易日。
+- `weekly` / `biweekly` / `monthly`：按 `roll_rule` 处理非交易日（顺延 / 提前 / 跳过）。
+- 订单状态：`awaiting_price`（等净值/收盘价）→ `filled`；异常时 `failed`，手动跳过为 `skipped`。
+- 创建历史开始的计划时会先预览补记期数，确认后才生成；单次最多补记 500 期，剩余在下次任务继续。
+- 场外基金费用：`fee = 金额 - 金额 / (1 + 费率)`，份额 `= (金额 - fee) / 净值`；股票/ETF 按佣金率和最低佣金计算，A 股按 100 股整手取整。
+- 定时任务按**交易日收盘/净值**结算；「立即执行」允许使用当前可见的最新价格。
+
+### 数据源
+
+| 资产 | 行情源 |
+|------|--------|
+| A 股 / 港股 / 美股 | 东方财富 `push2.eastmoney.com`、`push2his.eastmoney.com` |
+| 场外基金 | 天天基金 `fund.eastmoney.com/pingzhongdata/{code}.js` |
+| 加密货币 | Binance `data-api.binance.vision` |
+| 汇率 | `frankfurter.app`（历史）/ `open.er-api.com`（最新） |
+| A 股交易日历 | 东方财富上证指数日 K |
+
+> 本机网络若无法访问上述域名，资产仍可创建、使用手工价格；非人民币资产的记账需要汇率源可用。部署到可访问外网的 VPS 后行情会自动同步。
+
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `WM_PASSWORD` | 空 | 财富管理访问密码；为空时仅本机可访问 |
+| `WM_SECRET_KEY` | 随机 | Flask session 密钥；不设置时每次重启会使登录失效 |
+| `WM_DB_PATH` | `DATA_DIR/qdii.db` | 可选，财富模块单独的 SQLite 路径；一般不需要设置 |
+
+### 定时任务（新增）
+
+| 任务 | 触发时间 | 说明 |
+|------|----------|------|
+| `wm_sync_cn` | 周一至周五 15:10 | 同步 A 股/ETF 收盘价 |
+| `wm_sync_fund` | 每日 21:30 | 同步场外基金净值 |
+| `wm_sync_us` | 每日 07:00 | 同步美股/港股（等待上一交易日收盘） |
+| `wm_sync_crypto` | 每 2 小时（第 5 分钟） | 同步加密货币日线 |
+| `wm_sync_fx` | 每日 09:00 | 同步汇率 |
+| `wm_dca_generate` | 每日 00:10 | 生成到期定投订单 |
+| `wm_dca_settle` | 每 30 分钟 | 用已发布价格结算订单 |
+
+启动时会在后台执行一次定投补跑，避免停机错过期数。
+
+### 主要接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/wealth` | 财富管理页面（需登录） |
+| GET | `/api/wm/status` | 状态、待处理订单、最近同步 |
+| GET | `/api/wm/summary?range=1y` | 总资产、盈亏、XIRR、TWR、配置 |
+| GET | `/api/wm/history?range=1y` | 每日资产/成本/净流入 |
+| GET | `/api/wm/positions` | 持仓明细 |
+| GET/POST | `/api/wm/assets` | 资产列表 / 新增 |
+| PUT/DELETE | `/api/wm/assets/<id>` | 修改 / 删除（有交易或计划时不可删） |
+| POST | `/api/wm/assets/<id>/price` | 手工价格 |
+| POST | `/api/wm/assets/<id>/backfill` | 回补历史行情 |
+| GET/POST | `/api/wm/transactions` | 交易列表 / 记账 |
+| GET/PUT/DELETE | `/api/wm/transactions/<id>` | 单笔交易 |
+| GET/POST | `/api/wm/accounts` | 账户 |
+| GET/POST | `/api/wm/dca/plans` | 定投计划 |
+| PUT/DELETE | `/api/wm/dca/plans/<id>` | 修改 / 归档 |
+| POST | `/api/wm/dca/plans/<id>/pause\|resume\|run-now` | 暂停 / 恢复 / 立即执行 |
+| GET | `/api/wm/dca/orders` | 执行记录 |
+| POST | `/api/wm/dca/orders/<id>/skip\|retry` | 跳过 / 重试 |
+| POST | `/api/wm/dca/preview` | 预览期数与补记数量 |
+| POST | `/api/wm/dca/run` | 手动触发生成+结算 |
+| POST | `/api/wm/sync` | 同步全部行情 |
+| POST | `/api/wm/import/ghostfolio?dry_run=1` | Ghostfolio JSON 预览/导入 |
+| POST | `/api/wm/import/csv?dry_run=1` | CSV 预览/导入 |
+| GET | `/api/wm/export?format=csv` | 导出账本 |
+
+### 测试
+
+```bash
+python -m unittest tests.test_wealth_core -v
+```
+
+### 已知限制
+
+- 第一版不支持组合级定投、智能/价值平均定投、历史回测。
+- 累计盈亏按移动平均成本法；分红再投会增加份额和成本，总收益看 XIRR/TWR。
+- Ghostfolio 导出格式存在多个版本，导入器按常见 `activities` 结构做了兼容；建议先 `dry_run=1` 预览。
+- CSV 导入不做内容去重（Ghostfolio 导入会按内容指纹去重），请勿把同一批交易重复导入同一数据库。
+- XIRR 在极短周期（几天）内年化后可能非常大，这是数学结果，不代表真实长期收益。
+- 港股每手股数因股票而异，默认 100 股，可在资产编辑中修改最小交易单位。
+- 行情源不可用时不会伪造价格：订单会保持 `awaiting_price`，超过 14 天标记失败，可重试或手工补价。
+- 非人民币资产缺少历史汇率时，手工/导入记账会报错，定投订单会等待；只有当天记账会用最新汇率兜底，不会按 1:1 静默入账。组合估值缺汇率时会标记「缺汇率」。
+
+---
+
 ## 技术栈与目录结构
 
 | 层 | 技术 |
@@ -59,11 +170,26 @@ fundx/
 ├── app.py                  # Flask 主应用：路由、定时任务、额度曲线计算
 ├── fetcher.py              # QDII 全量/增量采集引擎（AKShare）
 ├── quota_watcher.py        # 日额度变动检测 + webhook 推送
+├── wealth/                 # 个人财富管理模块
+│   ├── __init__.py         # 模块导出
+│   ├── db.py               # 财富 DB 连接/时区
+│   ├── schema.py           # wm_* 表结构
+│   ├── portfolio.py        # 持仓/成本/估值/XIRR/TWR
+│   ├── prices.py           # 行情、净值、汇率、交易日历
+│   ├── dca.py              # 定投订单生成/结算
+│   ├── jobs.py             # APScheduler 任务
+│   └── routes.py           # /wealth 页面与 /api/wm/* 接口
 ├── templates/
-│   └── index.html          # 单页前端（含全部样式与脚本）
+│   ├── index.html          # QDII 单页前端（含全部样式与脚本）
+│   ├── wealth.html         # 财富管理前端
+│   └── wealth_login.html   # 财富管理登录页
 ├── static/
+│   ├── wealth.css          # 财富管理样式
+│   ├── wealth.js           # 财富管理前端逻辑
 │   └── vendor/
 │       └── echarts.min.js  # 本地 ECharts
+├── tests/
+│   └── test_wealth_core.py # 财富管理核心单元测试
 ├── requirements.txt        # Python 依赖
 ├── Dockerfile              # 镜像构建
 ├── docker-compose.yml      # 容器编排（端口 5000、数据挂载 ./data）
@@ -358,6 +484,8 @@ curl -s http://127.0.0.1:5000/api/fetch/status
 | `TZ` | 系统时区 | 建议 `Asia/Shanghai`。容器内已在 Dockerfile 中设置 |
 | `FLASK_ENV` | - | `ecosystem.config.js` 中设为 `production`，仅作标记，不影响行为 |
 
+> 财富管理相关变量（`WM_PASSWORD`、`WM_SECRET_KEY`、`WM_DB_PATH`）见[个人财富管理](#个人财富管理)章节。
+
 > 容器内监听端口固定为 `5000`（写在 `app.run(host='0.0.0.0', port=5000)`），不支持环境变量覆盖；宿主机端口在 compose 的 `ports` 里改。
 > Webhook 地址与密钥是 `app.py` 中的 `WEBHOOK_URL` / `WEBHOOK_SECRET` 常量，需要改代码。
 
@@ -392,6 +520,8 @@ APScheduler 在应用进程内运行（`Asia/Shanghai` 时区）：
 | `quota_daily` | 每日额度快照（`code + trade_date` 主键），额度曲线的数据来源 |
 
 表结构在 `app.py` 的 `init_db()` 中创建；升级时通过 `ALTER TABLE` 自动补列，**不需要手动迁移**。
+
+财富管理使用同一数据库中的 `wm_asset`、`wm_transaction`、`wm_price`、`wm_fx_rate`、`wm_dca_plan`、`wm_dca_order`、`wm_account`、`wm_trade_calendar`、`wm_sync_log`、`wm_import_log` 等表，均由 `wealth/schema.py` 自动创建。
 
 ---
 

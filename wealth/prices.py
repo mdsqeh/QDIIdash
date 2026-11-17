@@ -194,25 +194,56 @@ def binance_klines(symbol, start, end):
     return sorted(by_date.items())
 
 
-def fx_latest(currencies):
-    data = _get_json('https://open.er-api.com/v6/latest/USD')
-    rates = data.get('rates') or {}
-    cny = rates.get('CNY')
-    if not cny:
-        raise PriceError('汇率接口未返回 CNY')
+def _eastmoney_fx_rate(currency, timeout=None):
+    """Latest offshore CNH rate from Eastmoney (fast inside mainland China)."""
+    currency = (currency or '').upper()
+    if currency not in ('USD', 'HKD'):
+        return None
+    kwargs = {'timeout': timeout} if timeout else {}
+    data = _get_json(
+        'https://push2.eastmoney.com/api/qt/stock/get'
+        f'?secid=133.{currency}CNH&fields=f43,f59',
+        **kwargs,
+    ).get('data')
+    if not data:
+        return None
+    price = _scaled(data.get('f43'), data.get('f59'))
+    return price if price and price > 0 else None
+
+
+def fx_latest(currencies, timeout=None):
+    wanted = {str(c or 'CNY').upper() for c in currencies}
     found = {}
-    for currency in currencies:
-        currency = currency.upper()
-        if currency == 'CNY':
-            found[currency] = 1.0
-        elif currency in ('USD', 'USDT'):
-            found[currency] = float(cny)
-        elif currency in rates and rates[currency]:
-            found[currency] = float(cny) / float(rates[currency])
+    if 'CNY' in wanted:
+        found['CNY'] = 1.0
+    # Eastmoney is usually fast/reachable from mainland China and provides
+    # USD/CNH and HKD/CNH, close enough for a latest-rate fallback.
+    for currency in ('USD', 'HKD'):
+        if currency in wanted:
+            rate = _eastmoney_fx_rate(currency, timeout=timeout)
+            if rate:
+                found[currency] = rate
+                if currency == 'USD' and 'USDT' in wanted:
+                    found['USDT'] = rate
+    remaining = wanted - set(found) - {'CNY'}
+    if remaining:
+        try:
+            kwargs = {'timeout': timeout} if timeout else {}
+            data = _get_json('https://open.er-api.com/v6/latest/USD', **kwargs)
+            rates = data.get('rates') or {}
+            cny = rates.get('CNY')
+            if cny:
+                for currency in remaining:
+                    if currency in ('USD', 'USDT'):
+                        found[currency] = float(cny)
+                    elif currency in rates and rates[currency]:
+                        found[currency] = float(cny) / float(rates[currency])
+        except Exception:
+            pass
     return found
 
 
-def fx_history(currency, start, end):
+def fx_history(currency, start, end, timeout=None):
     currency = currency.upper()
     if currency == 'CNY':
         return []
@@ -220,7 +251,8 @@ def fx_history(currency, start, end):
         currency = 'USD'
     url = (f'https://api.frankfurter.app/{parse_date(start)}..{parse_date(end)}'
            f'?from={currency}&to=CNY')
-    data = _get_json(url)
+    kwargs = {'timeout': timeout} if timeout else {}
+    data = _get_json(url, **kwargs)
     result = []
     for day, values in (data.get('rates') or {}).items():
         rate = values.get('CNY')
@@ -436,13 +468,13 @@ def ensure_fx(conn, currency, start, end):
                     """INSERT INTO wm_fx_rate (rate_date, currency, cny_rate, source)
                        VALUES (?, ?, ?, ?)
                        ON CONFLICT(rate_date, currency) DO UPDATE SET cny_rate = excluded.cny_rate""",
-                    (today_str(), currency, rate, 'er-api'),
+                    (today_str(), currency, rate, 'latest'),
                 )
         except Exception:
             pass
 
 
-def ensure_fx_range(conn, currencies, start, end):
+def ensure_fx_range(conn, currencies, start, end, timeout=None):
     start = parse_date(start)
     end = parse_date(end)
     if start > end:
@@ -451,7 +483,7 @@ def ensure_fx_range(conn, currencies, start, end):
         if currency == 'CNY':
             continue
         try:
-            rows = fx_history(currency, start, end)
+            rows = fx_history(currency, start, end, timeout=timeout)
             for day, rate in rows:
                 conn.execute(
                     """INSERT INTO wm_fx_rate (rate_date, currency, cny_rate, source)
@@ -460,8 +492,19 @@ def ensure_fx_range(conn, currencies, start, end):
                     (day, currency, rate, 'frankfurter'),
                 )
         except Exception:
-            # Provider unavailable: still try to get a latest rate for valuation.
-            ensure_fx(conn, currency, start, end)
+            # Historical provider unavailable: try only the latest rate.
+            try:
+                rates = fx_latest([currency], timeout=timeout)
+                rate = rates.get(currency)
+                if rate:
+                    conn.execute(
+                        """INSERT INTO wm_fx_rate (rate_date, currency, cny_rate, source)
+                           VALUES (?, ?, ?, ?)
+                           ON CONFLICT(rate_date, currency) DO UPDATE SET cny_rate = excluded.cny_rate""",
+                        (today_str(), currency, rate, 'latest'),
+                    )
+            except Exception:
+                pass
 
 
 def get_fx_for_date(conn, currency, on_date):
@@ -490,7 +533,7 @@ def get_fx_for_date(conn, currency, on_date):
         """INSERT INTO wm_fx_rate (rate_date, currency, cny_rate, source)
            VALUES (?, ?, ?, ?)
            ON CONFLICT(rate_date, currency) DO UPDATE SET cny_rate = excluded.cny_rate""",
-        (today_str(), currency, rate, 'er-api'),
+        (today_str(), currency, rate, 'latest'),
     )
     return rate
 

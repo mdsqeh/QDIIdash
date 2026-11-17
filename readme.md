@@ -82,7 +82,7 @@ Flask + SQLite 后端、纯前端展示的 QDII 基金数据看板。自动采�
 | A 股 / 港股 / 美股 | 东方财富 `push2.eastmoney.com`、`push2his.eastmoney.com` |
 | 场外基金 | 天天基金 `fund.eastmoney.com/pingzhongdata/{code}.js` |
 | 加密货币 | Binance `data-api.binance.vision` |
-| 汇率 | `frankfurter.app`（历史）/ `open.er-api.com`（最新） |
+| 汇率 | `frankfurter.app`（历史）/ `open.er-api.com` / 东方财富 USDCNH/HKDCNH（最新兜底） |
 | A 股交易日历 | 东方财富上证指数日 K |
 
 > 本机网络若无法访问上述域名，资产仍可创建、使用手工价格；非人民币资产的记账需要汇率源可用。部署到可访问外网的 VPS 后行情会自动同步。
@@ -155,6 +155,7 @@ python -m unittest tests.test_wealth_core -v
 - 港股每手股数因股票而异，默认 100 股，可在资产编辑中修改最小交易单位。
 - 行情源不可用时不会伪造价格：订单会保持 `awaiting_price`，超过 14 天标记失败，可重试或手工补价。
 - 非人民币资产缺少历史汇率时，手工/导入记账会报错，定投订单会等待；只有当天记账会用最新汇率兜底，不会按 1:1 静默入账。组合估值缺汇率时会标记「缺汇率」。
+- 导入 Ghostfolio/CSV 时会先统一预取汇率，不会逐条等待网络；最近 7 天的记录在历史汇率不可用时可使用最新汇率（结果里会返回 `warnings`），更早的记录会跳过并在 `errors` 中列出。
 
 ---
 
@@ -658,6 +659,24 @@ docker compose up -d --build
 **Q：`sqlite3.OperationalError: database is locked`？**
 说明有多个进程同时写库（比如 PM2 开了多实例，或同时跑了两个 `app.py`）。本项目必须**单进程**运行：PM2 保持 `instances: 1`，不要用 gunicorn 多 worker。
 
+**Q：导入 Ghostfolio 后长时间没反应？**
+导入会先统一预取汇率，不再逐条等待网络。若服务器访问不了 `frankfurter.app`，会尝试 `open.er-api.com` 和东方财富 USDCNH/HKDCNH 最新价；最近 7 天的记录可用最新汇率兜底（结果里的 `warnings`），更早的记录会跳过并在 `errors` 中列出，人民币记录不受影响。若之前已经有一次超时请求仍在后台运行，先重启进程清掉它，再重试导入：
+
+```bash
+pm2 restart qdii
+# 或
+docker compose restart fundx
+```
+
+可以在这台服务器上检查汇率源是否可达：
+
+```bash
+curl -I --max-time 10 'https://api.frankfurter.app/2026-11-12?from=USD&to=CNY'
+curl -I --max-time 10 'https://open.er-api.com/v6/latest/USD'
+```
+
+大文件导入如果超过 Nginx 的 `proxy_read_timeout`（示例配置为 120s），建议分批导入或临时调大该值。重复导入会按内容指纹跳过已存在的交易。
+
 **Q：定时任务没按预期时间执行？**
 检查服务器/容器时区。容器已设 `TZ=Asia/Shanghai`；PM2 方式下若系统时区是 UTC，需 `sudo timedatectl set-timezone Asia/Shanghai`。
 
@@ -686,6 +705,7 @@ Docker 部署改 compose 的 `ports` 左侧端口（如 `"8080:5000"`）；本�
 
 - **个人财富管理**：新增 `/wealth` 全资产账本、自动定投、银行理财按日计提、Ghostfolio / CSV 导入导出、XIRR/TWR 与资产走势
 - **`.env` 支持**：`app.py` 启动时通过 `python-dotenv` 读取项目根目录 `.env`；Docker Compose 和 PM2 部署均可从 `.env` 读取 `WM_PASSWORD`、`WM_SECRET_KEY` 等变量
+- **Ghostfolio 导入优化**：导入前统一预取汇率，避免逐条等待；历史汇率不可用时用东方财富最新 USDCNH/HKDCNH 兜底，避免页面长时间无响应
 - **依赖补全**：`requirements.txt` 增加 `python-dotenv`
 
 ### 2026-10-27

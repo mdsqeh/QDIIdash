@@ -1284,6 +1284,62 @@ def _import_hash(row):
     return hashlib.sha1(key.encode('utf-8')).hexdigest()
 
 
+def _resolve_import_fx(conn, rows, timeout=10):
+    """Resolve import FX once per currency/date, without per-row network calls.
+
+    Returns ``(fx_map, failed_keys, warnings)``.  A recent date (<= 7 days) may
+    fall back to the latest rate when the historical provider is unavailable;
+    older dates are skipped rather than guessed.
+    """
+    currencies = set()
+    dates = []
+    for row in rows:
+        currency = str(row.get('currency') or '').strip().upper()
+        trade_date = row.get('trade_date')
+        if currency and currency != 'CNY' and trade_date:
+            currencies.add(currency)
+            dates.append(trade_date)
+    if not currencies or not dates:
+        return {}, set(), []
+
+    start = parse_date(min(dates)) - timedelta(days=7)
+    end = parse_date(max(dates))
+    for currency in currencies:
+        try:
+            prices.ensure_fx_range(conn, {currency}, start, end, timeout=timeout)
+        except Exception:
+            pass
+
+    fx_map = {}
+    failed = set()
+    warnings = []
+    latest = {}
+    today = parse_date(today_str())
+    for row in rows:
+        currency = str(row.get('currency') or '').strip().upper()
+        trade_date = row.get('trade_date')
+        if not currency or currency == 'CNY' or not trade_date:
+            continue
+        key = (currency, trade_date)
+        if key in failed or key in fx_map:
+            continue
+        rate = prices.fx_rate(conn, currency, trade_date)
+        if rate is None:
+            age = (today - parse_date(trade_date)).days
+            if 0 <= age <= 7:
+                if currency not in latest:
+                    latest[currency] = prices.fx_rate(conn, currency, today_str())
+                if latest[currency]:
+                    rate = latest[currency]
+                    warnings.append(
+                        f'{currency} {trade_date} 历史汇率不可用，使用最新汇率 {rate:.4f}')
+        if rate is None:
+            failed.add(key)
+        else:
+            fx_map[key] = rate
+    return fx_map, failed, warnings
+
+
 def _prepare_import(conn, payload, dry_run=True):
     accounts, rows = _ghostfolio_rows(payload)
     account_map = {}
@@ -1391,6 +1447,12 @@ def api_import_ghostfolio():
                 'sample': prepared['rows'][:10],
             })
 
+        # Resolve FX before starting the write transaction.  This prevents a
+        # slow/unreachable FX provider from making the import appear hung (and
+        # from holding the SQLite write lock while waiting on the network).
+        fx_map, fx_failed, fx_warnings = _resolve_import_fx(conn, prepared['rows'])
+        conn.commit()
+
         # Create accounts referenced by the file when they are new.
         for account in prepared['accounts']:
             name = (account.get('name') or '').strip()
@@ -1422,28 +1484,31 @@ def api_import_ghostfolio():
             asset_map[(asset['symbol'], asset['market'])] = asset
             if created:
                 created_assets.append(asset['id'])
-        # FX history once per currency.
-        currencies = {r['currency'] for r in prepared['rows'] if r.get('currency') != 'CNY'}
-        dates = [r['trade_date'] for r in prepared['rows']]
-        if dates and currencies:
-            try:
-                prices.ensure_fx_range(conn, currencies, min(dates), max(dates))
-            except Exception:
-                pass
 
         imported = 0
         for row in prepared['rows']:
             asset = asset_map.get((row['symbol'], row['market']))
             if not asset:
                 continue
+            currency = str(row.get('currency') or '').upper()
+            fx_key = (currency, row['trade_date'])
+            if currency and currency != 'CNY' and fx_key in fx_failed:
+                prepared['skipped'] += 1
+                prepared['errors'].append(
+                    f'{row["symbol"]} {row["trade_date"]}: 缺少 {currency}/CNY 汇率，已跳过')
+                continue
             account_id = account_id_by_ghost.get(str(row.get('account_id')))
+            payload = {
+                'asset_id': asset['id'], 'account_id': account_id,
+                'type': row['type'], 'trade_date': row['trade_date'],
+                'units': row['units'], 'price': row['price'], 'amount': row['amount'],
+                'fee': row['fee'], 'currency': row['currency'], 'note': row['note'],
+            }
+            if currency and currency != 'CNY' and fx_key in fx_map:
+                payload['fx_rate'] = fx_map[fx_key]
             try:
-                tx_id = _create_transaction(conn, {
-                    'asset_id': asset['id'], 'account_id': account_id,
-                    'type': row['type'], 'trade_date': row['trade_date'],
-                    'units': row['units'], 'price': row['price'], 'amount': row['amount'],
-                    'fee': row['fee'], 'currency': row['currency'], 'note': row['note'],
-                }, source='import', import_hash=row['import_hash'])
+                tx_id = _create_transaction(
+                    conn, payload, source='import', import_hash=row['import_hash'])
                 if tx_id:
                     imported += 1
             except Exception as exc:
@@ -1459,7 +1524,7 @@ def api_import_ghostfolio():
         return jsonify({
             'dry_run': False, 'imported': imported, 'duplicates': prepared['duplicates'],
             'skipped': prepared['skipped'], 'new_assets': len(created_assets),
-            'errors': prepared['errors'][:50],
+            'errors': prepared['errors'][:50], 'warnings': fx_warnings[:50],
         })
     except Exception as exc:
         conn.rollback()
@@ -1503,20 +1568,18 @@ def api_import_csv():
         if dry_run:
             return jsonify({'dry_run': True, 'rows': len(prepared), 'errors': errors[:50],
                             'fields': CSV_FIELDS})
+        fx_map, fx_failed, fx_warnings = _resolve_import_fx(conn, prepared)
+        conn.commit()
         imported = 0
         account_ids = {r['name']: r['id'] for r in conn.execute('SELECT id, name FROM wm_account').fetchall()}
-        currencies = {(row.get('currency') or '').strip().upper() for row in prepared}
-        currencies.discard('')
-        currencies.discard('CNY')
-        dates = [row.get('trade_date') for row in prepared if row.get('trade_date')]
-        if currencies and dates:
-            try:
-                prices.ensure_fx_range(conn, currencies, min(dates), max(dates))
-            except Exception:
-                pass
         for row in prepared:
             market = row['market'].strip().upper()
             try:
+                currency = str(row.get('currency') or '').strip().upper()
+                fx_key = (currency, row.get('trade_date'))
+                if currency and currency != 'CNY' and fx_key in fx_failed:
+                    errors.append(f'{row.get("symbol")} {row.get("trade_date")}: 缺少 {currency}/CNY 汇率，已跳过')
+                    continue
                 asset = conn.execute('SELECT * FROM wm_asset WHERE symbol=? AND market=?',
                                      (row['symbol'].strip(), market)).fetchone()
                 if not asset:
@@ -1527,19 +1590,23 @@ def api_import_csv():
                         'currency': row.get('currency') or _default_currency(market),
                     }, resolve=True)
                 account_id = account_ids.get((row.get('account') or '').strip())
-                _create_transaction(conn, {
+                payload = {
                     'asset_id': asset['id'], 'account_id': account_id,
                     'type': row.get('type') or 'buy', 'trade_date': row.get('trade_date'),
                     'units': row.get('units'), 'price': row.get('price'),
                     'amount': row.get('amount'), 'fee': row.get('fee'),
                     'currency': row.get('currency'), 'split_ratio': row.get('split_ratio'),
                     'note': row.get('note'),
-                }, source='import')
+                }
+                if currency and currency != 'CNY' and fx_key in fx_map:
+                    payload['fx_rate'] = fx_map[fx_key]
+                _create_transaction(conn, payload, source='import')
                 imported += 1
             except Exception as exc:
                 errors.append(f'{row.get("symbol")} {row.get("trade_date")}: {exc}')
         conn.commit()
-        return jsonify({'dry_run': False, 'imported': imported, 'errors': errors[:50]})
+        return jsonify({'dry_run': False, 'imported': imported, 'errors': errors[:50],
+                        'warnings': fx_warnings[:50]})
     except Exception as exc:
         conn.rollback()
         return _error(str(exc))

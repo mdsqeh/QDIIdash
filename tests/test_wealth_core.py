@@ -390,6 +390,34 @@ class FxTests(WealthTestBase):
 
 
 class ImportAndParsingTests(WealthTestBase):
+    def test_import_fx_preflight_caches_missing_and_recent_fallback(self):
+        from wealth.routes import _resolve_import_fx
+        today = datetime.now(SHANGHAI_TZ).date()
+        recent = (today - timedelta(days=3)).isoformat()
+        original_ensure = prices.ensure_fx_range
+        original_rate = prices.fx_rate
+        prices.ensure_fx_range = lambda *args, **kwargs: None
+        prices.fx_rate = lambda conn, currency, day: None
+        try:
+            _, failed, _ = _resolve_import_fx(
+                self.conn, [{'currency': 'USD', 'trade_date': recent}])
+            self.assertIn(('USD', recent), failed)
+        finally:
+            prices.fx_rate = original_rate
+            prices.ensure_fx_range = original_ensure
+
+        prices.ensure_fx_range = lambda *args, **kwargs: None
+        prices.fx_rate = lambda conn, currency, day: 7.1 if str(day) == today.isoformat() else None
+        try:
+            fx, failed, warnings = _resolve_import_fx(
+                self.conn, [{'currency': 'USD', 'trade_date': recent}])
+            self.assertEqual(fx[('USD', recent)], 7.1)
+            self.assertFalse(failed)
+            self.assertTrue(warnings)
+        finally:
+            prices.fx_rate = original_rate
+            prices.ensure_fx_range = original_ensure
+
     def test_fund_nav_js_parsing(self):
         stamp = int(datetime(2026, 1, 2, tzinfo=SHANGHAI_TZ).timestamp() * 1000)
         text = (

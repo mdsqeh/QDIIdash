@@ -1374,18 +1374,22 @@ function openImportModal() {
         btn.disabled = true;
         try {
             const data = await api('/api/wm/import/ghostfolio?dry_run=0', { method: 'POST', body: parsed });
+            const warningHtml = data.warnings?.length
+                ? `<div class="muted" style="margin-top:4px">${data.warnings.map(esc).join('<br>')}</div>` : '';
             if (data.errors?.length) {
                 toast(`导入 ${data.imported} 笔，${data.errors.length} 条失败`, 'error');
                 const box = $('#importPreview');
                 box.style.display = 'block';
                 box.innerHTML = `<div class="preview-row"><b>导入 ${data.imported} 笔</b><span>失败 ${data.errors.length} 条</span></div>
-                    <div class="warn">${data.errors.map(esc).join('<br>')}</div>`;
+                    <div class="warn">${data.errors.map(esc).join('<br>')}</div>${warningHtml}`;
                 btn.disabled = false;
                 await refreshAll();
                 await loadTransactions(1);
                 return;
             }
-            toast(`导入完成：${data.imported} 笔，新资产 ${data.new_assets} 个`, 'success');
+            toast(data.warnings?.length
+                ? `导入完成：${data.imported} 笔；${data.warnings.length} 笔使用最新汇率`
+                : `导入完成：${data.imported} 笔，新资产 ${data.new_assets} 个`, 'success');
             closeModal();
             await refreshAll();
             await loadTransactions(1);
@@ -1438,18 +1442,22 @@ function openCsvImportModal() {
         btn.disabled = true;
         try {
             const data = await send(false);
+            const warningHtml = data.warnings?.length
+                ? `<div class="muted" style="margin-top:4px">${data.warnings.map(esc).join('<br>')}</div>` : '';
             if (data.errors?.length) {
                 toast(`导入 ${data.imported} 笔，${data.errors.length} 条失败`, 'error');
                 const box = $('#csvPreview');
                 box.style.display = 'block';
                 box.innerHTML = `<div class="preview-row"><b>导入 ${data.imported} 笔</b><span>失败 ${data.errors.length} 条</span></div>
-                    <div class="warn">${data.errors.map(esc).join('<br>')}</div>`;
+                    <div class="warn">${data.errors.map(esc).join('<br>')}</div>${warningHtml}`;
                 btn.disabled = false;
                 await refreshAll();
                 await loadTransactions(1);
                 return;
             }
-            toast(`导入完成：${data.imported} 笔`, 'success');
+            toast(data.warnings?.length
+                ? `导入完成：${data.imported} 笔；${data.warnings.length} 笔使用最新汇率`
+                : `导入完成：${data.imported} 笔`, 'success');
             closeModal();
             await refreshAll();
             await loadTransactions(1);

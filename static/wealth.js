@@ -1193,6 +1193,8 @@ function openAccountModal(account = null) {
             ${field('账户名称', `<input name="name" value="${esc(a.name || '')}" required placeholder="如 招商证券 / IBKR">`, '', 'full')}
             ${field('平台 / 券商', `<input name="broker" value="${esc(a.broker || '')}" placeholder="可选">`)}
             ${field('币种', `<select name="currency">${currencies.map(c => `<option value="${c}" ${(a.currency || 'CNY') === c ? 'selected' : ''}>${c}</option>`).join('')}</select>`)}
+            ${field('现金余额', `<input name="cash_amount" type="number" step="0.01" value="${a.cash_date ? a.cash_amount : ''}" placeholder="留空表示不修改">`, '按账户币种；计入总资产；填 0 表示清零')}
+            ${field('余额日期', `<input name="cash_date" type="date" value="${esc(a.cash_date || todayIso())}">`, '总资产取最新一条不晚于今天的余额')}
             ${editing ? field('状态', `<select name="is_active"><option value="1" ${a.is_active ? 'selected' : ''}>启用</option><option value="0" ${!a.is_active ? 'selected' : ''}>停用</option></select>`) : ''}
         </div>
         <div class="form-actions">
@@ -1209,6 +1211,18 @@ function openAccountModal(account = null) {
         const data = formDataObject(event.target);
         if (editing) data.is_active = data.is_active === '1';
         else delete data.is_active;
+        const cashAmount = String(data.cash_amount ?? '').trim();
+        const cashDate = data.cash_date || todayIso();
+        const sameCash = editing && a.cash_date
+            && Number(cashAmount) === Number(a.cash_amount)
+            && cashDate === a.cash_date;
+        if (!cashAmount || sameCash) {
+            delete data.cash_amount;
+            delete data.cash_date;
+        } else {
+            data.cash_amount = cashAmount;
+            data.cash_date = cashDate;
+        }
         submitting = true;
         const submitBtn = event.target.querySelector('button[type=submit]');
         if (submitBtn) submitBtn.disabled = true;

@@ -187,6 +187,37 @@ class MathsTests(WealthTestBase):
         self.assertEqual(len(cash_alloc), 1)
         self.assertAlmostEqual(cash_alloc[0]['value'], 700.0)
 
+    def test_manual_account_cash_upsert(self):
+        from wealth.routes import _upsert_account_cash
+        account_id = self.add_account('手工现金')
+        _upsert_account_cash(self.conn, account_id, 100, '2026-11-16', 'CNY')
+        _upsert_account_cash(self.conn, account_id, 200, '2026-11-17', 'CNY')
+        self.conn.commit()
+        rows, total = portfolio.account_cash(self.conn, '2026-11-16')
+        self.assertEqual(len(rows), 1)
+        self.assertAlmostEqual(total, 100.0)
+        rows, total = portfolio.account_cash(self.conn, '2026-11-17')
+        self.assertAlmostEqual(total, 200.0)
+        _upsert_account_cash(self.conn, account_id, 250, '2026-11-17', 'CNY')
+        self.conn.commit()
+        rows, total = portfolio.account_cash(self.conn, '2026-11-17')
+        self.assertAlmostEqual(total, 250.0)
+        self.assertEqual(rows[0]['account_id'], account_id)
+        self.assertEqual(rows[0]['currency'], 'CNY')
+
+    def test_cash_fields_validation(self):
+        from wealth.routes import _cash_fields
+        self.assertEqual(_cash_fields({}), (None, None))
+        self.assertEqual(_cash_fields({'cash_amount': ''}), (None, None))
+        amount, balance_date = _cash_fields(
+            {'cash_amount': '12.5', 'cash_date': '2026-11-16'})
+        self.assertAlmostEqual(amount, 12.5)
+        self.assertEqual(balance_date, '2026-11-16')
+        with self.assertRaises(ValueError):
+            _cash_fields({'cash_amount': 'abc'})
+        with self.assertRaises(ValueError):
+            _cash_fields({'cash_amount': 1, 'cash_date': '2999-01-01'})
+
     def test_moving_average_and_realized(self):
         asset_id = self.add_asset()
         self.add_tx(asset_id, 'buy', '2026-01-01', units=10, price=10, amount=100)

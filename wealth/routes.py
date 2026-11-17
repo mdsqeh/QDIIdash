@@ -145,6 +145,44 @@ def _num(value, default=0.0):
         return default
 
 
+def _cash_fields(data):
+    """Parse an optional manual cash snapshot; blank means "leave unchanged"."""
+    raw = data.get('cash_amount')
+    if raw is None or str(raw).strip() == '':
+        return None, None
+    try:
+        amount = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError('现金余额应为数字')
+    if not math.isfinite(amount):
+        raise ValueError('现金余额应为有限数字')
+    raw_date = str(data.get('cash_date') or '').strip()
+    if raw_date:
+        try:
+            balance_date = iso(parse_date(raw_date))
+        except (TypeError, ValueError):
+            raise ValueError('现金余额日期格式无效')
+    else:
+        balance_date = today_str()
+    if balance_date > today_str():
+        raise ValueError('现金余额日期不能晚于今天')
+    return amount, balance_date
+
+
+def _upsert_account_cash(conn, account_id, amount, balance_date, currency):
+    conn.execute(
+        """INSERT INTO wm_account_balance
+           (account_id, balance_date, amount, currency, source, created_at)
+           VALUES (?, ?, ?, ?, 'manual', ?)
+           ON CONFLICT(account_id, balance_date) DO UPDATE SET
+             amount = excluded.amount,
+             currency = excluded.currency,
+             source = excluded.source,
+             created_at = excluded.created_at""",
+        (account_id, balance_date, amount, currency, now_iso()),
+    )
+
+
 def _asset(conn, asset_id):
     row = conn.execute('SELECT * FROM wm_asset WHERE id = ?', (asset_id,)).fetchone()
     return dict(row) if row else None
@@ -805,13 +843,20 @@ def api_accounts():
         return _error('账户币种应为 3 位字母代码')
     broker = str(data.get('broker') or '').strip() or None
     try:
+        cash_amount, cash_date = _cash_fields(data)
+    except ValueError as exc:
+        return _error(str(exc))
+    try:
         cur = conn.execute(
             'INSERT INTO wm_account (name, broker, currency, created_at) VALUES (?, ?, ?, ?)',
             (name, broker, currency, now_iso()),
         )
+        if cash_amount is not None:
+            _upsert_account_cash(conn, cur.lastrowid, cash_amount, cash_date, currency)
         conn.commit()
         return jsonify(dict(conn.execute('SELECT * FROM wm_account WHERE id=?', (cur.lastrowid,)).fetchone())), 201
     except Exception as exc:
+        conn.rollback()
         return _error(f'账户已存在或无效: {exc}')
 
 
@@ -847,6 +892,10 @@ def api_account(account_id):
     is_active = 1 if _flag(data.get('is_active', account['is_active']),
                            bool(account['is_active'])) else 0
     try:
+        cash_amount, cash_date = _cash_fields(data)
+    except ValueError as exc:
+        return _error(str(exc))
+    try:
         conn.execute(
             'UPDATE wm_account SET name=?, broker=?, currency=?, is_active=? WHERE id=?',
             (name, broker, currency, is_active, account_id),
@@ -856,6 +905,8 @@ def api_account(account_id):
                 'UPDATE wm_account_balance SET currency = ? WHERE account_id = ?',
                 (currency, account_id),
             )
+        if cash_amount is not None:
+            _upsert_account_cash(conn, account_id, cash_amount, cash_date, currency)
         conn.commit()
         return jsonify(dict(conn.execute('SELECT * FROM wm_account WHERE id=?', (account_id,)).fetchone()))
     except Exception as exc:

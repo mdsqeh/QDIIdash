@@ -1212,7 +1212,7 @@ function openAccountModal(account = null) {
                 <select data-cash-currency ${isNew ? '' : 'disabled'}>${currencies.map(c => `<option value="${c}" ${c === currency ? 'selected' : ''}>${c}</option>`).join('')}</select>
             </label>
             <label class="field" style="margin:0"><span>金额</span>
-                <input type="number" step="0.01" data-cash-amount value="${esc(balance.amount ?? '')}" placeholder="留空不修改">
+                <input type="number" step="any" data-cash-amount value="${esc(balance.amount ?? '')}" placeholder="留空不修改">
             </label>
             <label class="field" style="margin:0"><span>余额日期</span>
                 <input type="date" data-cash-date value="${esc(balance.balance_date || todayIso())}">

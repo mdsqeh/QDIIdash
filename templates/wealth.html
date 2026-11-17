@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>个人财富管理 · QDIIdash</title>
-<link rel="stylesheet" href="/static/wealth.css">
+<link rel="stylesheet" href="{{ url_for('static', filename='wealth.css', v=static_version) }}">
 <script src="/static/vendor/echarts.min.js"></script>
 </head>
 <body>
@@ -250,6 +250,6 @@
 </div>
 
 <div class="toast" id="toast"></div>
-<script src="/static/wealth.js"></script>
+<script src="{{ url_for('static', filename='wealth.js', v=static_version) }}"></script>
 </body>
 </html>

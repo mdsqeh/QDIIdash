@@ -1029,7 +1029,7 @@ function openAssetModal(asset = null) {
     const html = `<form id="modalForm">
         <div class="form-grid">
             ${field('市场', `<select name="market" id="assetMarket" ${editing ? 'disabled' : ''}>${markets.map(m => `<option value="${m}" ${a.market === m ? 'selected' : ''}>${MARKET_LABELS[m]}</option>`).join('')}</select>`)}
-            ${field('币种', `<select name="currency" id="assetCurrency" ${editing && (a.tx_count || a.plan_count) ? 'disabled' : ''}>${['CNY', 'USD', 'HKD'].map(c => `<option value="${c}" ${a.currency === c ? 'selected' : ''}>${c}</option>`).join('')}</select>`, '可手动选择；场外基金会按名称识别美元/港币份额，查询结果不会覆盖手选币种')}
+            ${field('币种', `<select name="currency" id="assetCurrency" ${editing && (a.tx_count || a.plan_count) ? 'disabled' : ''}>${['CNY', 'USD', 'HKD'].map(c => `<option value="${c}" ${a.currency === c ? 'selected' : ''}>${c}</option>`).join('')}</select>`, editing && (a.tx_count || a.plan_count) ? '已有交易/计划，币种不能直接修改；需删除后重新添加' : '可手动选择；场外基金会按名称识别美元/港币份额，查询结果不会覆盖手选币种')}
             ${field('代码', `<input name="symbol" id="assetSymbol" value="${esc(a.symbol || '')}" ${editing ? 'readonly' : ''} placeholder="如 600519 / AAPL / 000001 / BTCUSDT">`)}
             ${field('名称', `<input name="name" id="assetName" value="${esc(a.name || '')}" placeholder="可留空自动查询">`, '', 'full')}
             ${field('类别', `<select name="asset_class" id="assetClass">${classes.map(c => `<option value="${c}" ${a.asset_class === c ? 'selected' : ''}>${CLASS_LABELS[c]}</option>`).join('')}</select>`)}

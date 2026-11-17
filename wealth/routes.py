@@ -79,6 +79,13 @@ def _guard():
     return redirect(url_for('wealth.login', next=path))
 
 
+@wealth_bp.after_request
+def _no_store_api(response):
+    if request.path.startswith('/api/wm/'):
+        response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
 @wealth_bp.route('/wealth/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
@@ -457,9 +464,25 @@ def _downsample(points, limit=1500):
 
 # ── pages / status ────────────────────────────────────────────────
 
+def _static_version():
+    try:
+        folder = current_app.static_folder
+        stamps = []
+        for name in ('wealth.js', 'wealth.css'):
+            path = os.path.join(folder, name)
+            if os.path.exists(path):
+                stamps.append(os.path.getmtime(path))
+        return str(int(max(stamps))) if stamps else '1'
+    except Exception:
+        return '1'
+
+
 @wealth_bp.route('/wealth')
 def index():
-    return render_template('wealth.html')
+    response = current_app.make_response(
+        render_template('wealth.html', static_version=_static_version()))
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    return response
 
 
 @wealth_bp.route('/api/wm/status')
@@ -538,13 +561,24 @@ def api_lookup():
                 row = conn.execute('SELECT code, name, nav FROM funds WHERE code = ?', (symbol,)).fetchone()
             except Exception:
                 row = None
-            if row and row['name']:
-                return jsonify({'found': True, 'name': row['name'], 'price': row['nav'],
-                                'currency': prices.fund_currency(row['name']),
-                                'quote_source': 'fund_em', 'quote_key': symbol})
-            name, rows = prices.fund_nav(symbol)
-            return jsonify({'found': True, 'name': name, 'price': rows[-1][1] if rows else None,
-                            'currency': prices.fund_currency(name),
+            name = row['name'] if row and row['name'] else ''
+            price = row['nav'] if row else None
+            currency = prices.fund_currency_hint(name)
+            if not currency:
+                # Local fund tables may only keep the base name without the
+                # share-class suffix (人民币/美元现汇/港币). Ask Eastmoney for
+                # the full name before deciding the NAV currency.
+                try:
+                    nav_name, rows = prices.fund_nav(symbol)
+                except Exception:
+                    nav_name, rows = '', []
+                if nav_name:
+                    name = nav_name
+                if rows:
+                    price = rows[-1][1]
+                currency = prices.fund_currency(name)
+            return jsonify({'found': True, 'name': name, 'price': price,
+                            'currency': currency,
                             'quote_source': 'fund_em', 'quote_key': symbol})
         if market in ('CN', 'US', 'HK'):
             key = prices.eastmoney_secid(symbol, market) or prices.resolve_eastmoney_us(symbol)

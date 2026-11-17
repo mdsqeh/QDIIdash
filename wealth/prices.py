@@ -110,6 +110,28 @@ def eastmoney_kline(quote_key, start, end):
     return result
 
 
+_FUND_USD_RE = re.compile(r'美元(?:现汇|现钞|汇|份额|[A-Za-z]|[（()）]|$)')
+
+
+def fund_currency_hint(name):
+    """Return the explicit share-class currency in a fund name, if any."""
+    name = str(name or '').strip()
+    if not name:
+        return None
+    if '人民币' in name:
+        return 'CNY'
+    if '港币' in name or '港元' in name:
+        return 'HKD'
+    if _FUND_USD_RE.search(name):
+        return 'USD'
+    return None
+
+
+def fund_currency(name):
+    """Infer an open-end fund's NAV currency from its share-class name."""
+    return fund_currency_hint(name) or 'CNY'
+
+
 def parse_fund_nav_js(text):
     name_match = re.search(r'var fS_name\s*=\s*"(.*?)";', text)
     name = name_match.group(1) if name_match else ''
@@ -318,18 +340,17 @@ def sync_asset(conn, asset, full=False, start=None):
     source = asset.get('quote_source') or 'manual'
     if source in ('manual', 'accrual'):
         return 0
-    native_currency = {
-        'CN': 'CNY', 'US': 'USD', 'HK': 'HKD',
-        'FUND_CN': 'CNY', 'CRYPTO': 'USD',
-    }.get(asset.get('market'))
-    asset_currency = (asset.get('currency') or 'CNY').upper()
-    if native_currency and asset_currency != native_currency:
-        raise PriceError('资产币种与行情源本币不一致，请使用手动价格')
     today = parse_date(today_str())
 
     asset_id = asset['id']
+    asset_currency = (asset.get('currency') or 'CNY').upper()
     if source == 'fund_em':
         name, rows = fund_nav(asset['symbol'])
+        nav_currency = fund_currency(name)
+        if nav_currency != asset_currency:
+            raise PriceError(
+                f'基金净值为 {nav_currency}，资产币种为 {asset_currency}；'
+                '请修改资产币种或使用手动价格')
         if name and (not asset.get('name') or asset.get('name') == asset.get('symbol')):
             conn.execute('UPDATE wm_asset SET name = ? WHERE id = ?', (name, asset_id))
         prev = conn.execute(
@@ -346,6 +367,13 @@ def sync_asset(conn, asset, full=False, start=None):
         if latest:
             _update_asset_last(conn, asset_id, latest[1], latest[0])
         return count
+
+    native_currency = {
+        'CN': 'CNY', 'US': 'USD', 'HK': 'HKD',
+        'FUND_CN': 'CNY', 'CRYPTO': 'USD',
+    }.get(asset.get('market'))
+    if native_currency and asset_currency != native_currency:
+        raise PriceError('资产币种与行情源本币不一致，请使用手动价格')
 
     if source == 'binance':
         pair = _binance_symbol(asset.get('quote_key') or asset['symbol'])

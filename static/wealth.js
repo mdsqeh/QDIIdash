@@ -1029,7 +1029,7 @@ function openAssetModal(asset = null) {
     const html = `<form id="modalForm">
         <div class="form-grid">
             ${field('市场', `<select name="market" id="assetMarket" ${editing ? 'disabled' : ''}>${markets.map(m => `<option value="${m}" ${a.market === m ? 'selected' : ''}>${MARKET_LABELS[m]}</option>`).join('')}</select>`)}
-            ${field('币种', `<select name="currency" id="assetCurrency" ${editing && (a.tx_count || a.plan_count) ? 'disabled' : ''}>${['CNY', 'USD', 'HKD'].map(c => `<option value="${c}" ${a.currency === c ? 'selected' : ''}>${c}</option>`).join('')}</select>`, '查询结果不一定准确，可手动选择；非本币会自动改用手动价格')}
+            ${field('币种', `<select name="currency" id="assetCurrency" ${editing && (a.tx_count || a.plan_count) ? 'disabled' : ''}>${['CNY', 'USD', 'HKD'].map(c => `<option value="${c}" ${a.currency === c ? 'selected' : ''}>${c}</option>`).join('')}</select>`, '可手动选择；场外基金会按名称识别美元/港币份额，查询结果不会覆盖手选币种')}
             ${field('代码', `<input name="symbol" id="assetSymbol" value="${esc(a.symbol || '')}" ${editing ? 'readonly' : ''} placeholder="如 600519 / AAPL / 000001 / BTCUSDT">`)}
             ${field('名称', `<input name="name" id="assetName" value="${esc(a.name || '')}" placeholder="可留空自动查询">`, '', 'full')}
             ${field('类别', `<select name="asset_class" id="assetClass">${classes.map(c => `<option value="${c}" ${a.asset_class === c ? 'selected' : ''}>${CLASS_LABELS[c]}</option>`).join('')}</select>`)}
@@ -1057,10 +1057,16 @@ function openAssetModal(asset = null) {
     $('#modalBody [data-close]')?.addEventListener('click', closeModal);
 
     let currencyTouched = Boolean(editing);
-    const nativeCurrency = market => ({
-        CN: 'CNY', US: 'USD', HK: 'HKD', FUND_CN: 'CNY', CRYPTO: 'USD',
-        BANK: 'CNY', MANUAL: 'CNY',
-    }[market] || null);
+    const fundCurrencyHint = name => {
+        if (!name) return null;
+        if (name.includes('人民币')) return 'CNY';
+        if (name.includes('港币') || name.includes('港元')) return 'HKD';
+        return /美元(?:现汇|现钞|汇|份额|[A-Za-z]|[（()）]|$)/.test(name) ? 'USD' : null;
+    };
+    let fundNavCurrency = editing && a.market === 'FUND_CN' ? fundCurrencyHint(a.name) : null;
+    const nativeCurrency = market => market === 'FUND_CN'
+        ? fundNavCurrency
+        : ({ CN: 'CNY', US: 'USD', HK: 'HKD', CRYPTO: 'USD', BANK: 'CNY', MANUAL: 'CNY' }[market] || null);
     const applyCurrencySourceRule = () => {
         const market = $('#assetMarket')?.value;
         const currency = $('#assetCurrency')?.value;
@@ -1074,6 +1080,7 @@ function openAssetModal(asset = null) {
     const syncDefaults = () => {
         if (editing) return;
         currencyTouched = false;
+        fundNavCurrency = null;
         const market = $('#assetMarket').value;
         $('#assetCurrency').value = nativeCurrency(market) || 'CNY';
         const source = { CN: 'eastmoney', US: 'eastmoney', HK: 'eastmoney', FUND_CN: 'fund_em', CRYPTO: 'binance', BANK: 'accrual', MANUAL: 'manual' };
@@ -1112,14 +1119,20 @@ function openAssetModal(asset = null) {
             const data = await api(`/api/wm/lookup?symbol=${encodeURIComponent(symbol)}&market=${encodeURIComponent(market)}`);
             if (!data.found) throw new Error(data.error || '未找到');
             $('#assetName').value = data.name || $('#assetName').value;
+            fundNavCurrency = data.currency || null;
             if (!currencyTouched && data.currency) $('#assetCurrency').value = data.currency;
             if (data.quote_source) $('#assetSource').value = data.quote_source;
             if (data.quote_key) $('#assetQuoteKey').value = data.quote_key;
             if (data.asset_class) $('#assetClass').value = data.asset_class;
             applyCurrencySourceRule();
-            toast(currencyTouched && data.currency && data.currency !== $('#assetCurrency').value
-                ? `已查询；保留手动币种 ${$('#assetCurrency').value}`
-                : '已查询，确认后保存', 'success');
+            const selectedCurrency = $('#assetCurrency').value;
+            let message = '已查询，确认后保存';
+            if (currencyTouched && data.currency && data.currency !== selectedCurrency) {
+                message = `已查询；保留手动币种 ${selectedCurrency}`;
+            } else if (data.currency) {
+                message = `已查询；识别币种 ${data.currency}`;
+            }
+            toast(message, 'success');
         } catch (err) {
             toast(err.message, 'error');
         } finally {

@@ -499,20 +499,57 @@ class ImportAndParsingTests(WealthTestBase):
 
     def test_fund_currency_override(self):
         from wealth.routes import _create_asset_record
+        # A USD share class can keep the Eastmoney NAV source: its NAV is USD.
         fund, created = _create_asset_record(self.conn, {
             'symbol': '000044', 'market': 'FUND_CN', 'asset_class': 'fund',
-            'name': '美元基金', 'currency': 'USD', 'quote_source': 'manual',
+            'name': '嘉实美国成长股票美元现汇', 'quote_source': 'fund_em',
+        })
+        self.assertTrue(created)
+        self.assertEqual(fund['currency'], 'USD')
+        self.assertEqual(fund['quote_source'], 'fund_em')
+        # A CNY share class cannot use a USD asset currency with the CNY NAV.
+        fund, created = _create_asset_record(self.conn, {
+            'symbol': '000043', 'market': 'FUND_CN', 'asset_class': 'fund',
+            'name': '嘉实美国成长股票人民币', 'currency': 'USD', 'quote_source': 'fund_em',
         })
         self.assertTrue(created)
         self.assertEqual(fund['currency'], 'USD')
         self.assertEqual(fund['quote_source'], 'manual')
-        # A non-CNY fund must not use the CNY NAV source; switch to manual.
-        fund, created = _create_asset_record(self.conn, {
-            'symbol': '000045', 'market': 'FUND_CN', 'asset_class': 'fund',
-            'name': '美元基金', 'currency': 'USD', 'quote_source': 'fund_em',
-        })
-        self.assertTrue(created)
-        self.assertEqual(fund['quote_source'], 'manual')
+
+    def test_fund_currency_inference(self):
+        cases = {
+            '嘉实美国成长股票美元现汇': 'USD',
+            '嘉实美国成长股票人民币': 'CNY',
+            '广发纳斯达克100ETF联接美元(QDII)A': 'USD',
+            '南方亚洲美元收益债券(QDII)A(人民币)': 'CNY',
+            '南方亚洲美元收益债券(QDII)A(美元现汇)': 'USD',
+            '银华美元债精选债券(QDII)A': 'CNY',
+            '工银全球股票(QDII)港币': 'HKD',
+        }
+        for name, expected in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(prices.fund_currency(name), expected)
+
+    def test_fund_nav_currency_must_match_asset(self):
+        asset_id = self.add_asset(
+            symbol='000044', market='FUND_CN', asset_class='fund',
+            name='嘉实美国成长股票美元现汇', currency='USD',
+            quote_source='fund_em', lot_size=1, allow_fraction=1)
+        asset = dict(self.conn.execute(
+            'SELECT * FROM wm_asset WHERE id = ?', (asset_id,)).fetchone())
+        original = prices.fund_nav
+        prices.fund_nav = lambda code: (
+            '嘉实美国成长股票美元现汇', [('2026-11-17', 5.29)])
+        try:
+            self.assertEqual(prices.sync_asset(self.conn, asset), 1)
+            self.conn.execute(
+                'UPDATE wm_asset SET currency = ? WHERE id = ?', ('CNY', asset_id))
+            self.conn.commit()
+            asset['currency'] = 'CNY'
+            with self.assertRaises(prices.PriceError):
+                prices.sync_asset(self.conn, asset)
+        finally:
+            prices.fund_nav = original
 
     def test_ghostfolio_top_level_asset_profiles(self):
         from wealth.routes import _ghostfolio_rows

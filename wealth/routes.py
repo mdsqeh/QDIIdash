@@ -154,6 +154,12 @@ def _default_currency(market):
     return MARKET_DEFAULT_CURRENCY.get(market, 'CNY')
 
 
+def _asset_native_currency(market, name=None):
+    if market == 'FUND_CN':
+        return prices.fund_currency_hint(name)
+    return MARKET_DEFAULT_CURRENCY.get(market)
+
+
 def _default_source(market):
     return {
         'CN': 'eastmoney', 'US': 'eastmoney', 'HK': 'eastmoney',
@@ -201,11 +207,16 @@ def _create_asset_record(conn, data, resolve=False):
         return dict(existing), False
 
     name = str(data.get('name') or '').strip()
-    currency = str(data.get('currency') or _default_currency(market)).upper()
+    if resolve and not name:
+        name = _lookup_name(conn, market, symbol)
+    if not name:
+        name = symbol
+    native_currency = _asset_native_currency(market, name)
+    provided_currency = str(data.get('currency') or '').upper()
+    currency = provided_currency or native_currency or _default_currency(market)
     if currency not in ASSET_CURRENCIES:
         raise ValueError(f'资产币种应为 {"/".join(sorted(ASSET_CURRENCIES))}，收到 {currency}')
     quote_source = str(data.get('quote_source') or _default_source(market))
-    native_currency = MARKET_DEFAULT_CURRENCY.get(market)
     if native_currency and currency != native_currency and quote_source not in ('manual', 'accrual'):
         quote_source = 'manual'
     lot_size, allow_fraction = _default_lot(asset_class, market)
@@ -216,11 +227,6 @@ def _create_asset_record(conn, data, resolve=False):
         lot_size = max(_num(data.get('lot_size'), 1), 1e-9)
     if data.get('allow_fraction') is not None:
         allow_fraction = 1 if _flag(data.get('allow_fraction')) else 0
-
-    if resolve and not name:
-        name = _lookup_name(conn, market, symbol)
-    if not name:
-        name = symbol
 
     quote_key = data.get('quote_key')
     if not quote_key:
@@ -534,10 +540,12 @@ def api_lookup():
                 row = None
             if row and row['name']:
                 return jsonify({'found': True, 'name': row['name'], 'price': row['nav'],
-                                'currency': 'CNY', 'quote_source': 'fund_em', 'quote_key': symbol})
+                                'currency': prices.fund_currency(row['name']),
+                                'quote_source': 'fund_em', 'quote_key': symbol})
             name, rows = prices.fund_nav(symbol)
             return jsonify({'found': True, 'name': name, 'price': rows[-1][1] if rows else None,
-                            'currency': 'CNY', 'quote_source': 'fund_em', 'quote_key': symbol})
+                            'currency': prices.fund_currency(name),
+                            'quote_source': 'fund_em', 'quote_key': symbol})
         if market in ('CN', 'US', 'HK'):
             key = prices.eastmoney_secid(symbol, market) or prices.resolve_eastmoney_us(symbol)
             quote = prices.eastmoney_quote(key)
@@ -656,7 +664,7 @@ def api_asset(asset_id):
         return _error('不支持的估值方式')
     if fields['interest_mode'] not in ('simple', 'compound'):
         return _error('不支持的计息方式')
-    native_currency = MARKET_DEFAULT_CURRENCY.get(asset['market'])
+    native_currency = _asset_native_currency(asset['market'], fields['name'])
     if (native_currency and fields['currency'] != native_currency
             and fields['quote_source'] not in ('manual', 'accrual')):
         fields['quote_source'] = 'manual'

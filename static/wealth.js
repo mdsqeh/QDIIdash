@@ -345,6 +345,7 @@ function renderHoldings() {
             <td class="num ${pnlClass(p.day_pnl_cny)}">${fmtMoney(p.day_pnl_cny)}</td>
             <td class="num">${fmtPct(p.weight)}</td>
             <td><div class="row-actions">
+                <button class="btn btn-ghost btn-sm" data-action="edit-holding" data-asset="${p.asset_id}" data-account="${p.account_id ?? ''}">编辑</button>
                 <button class="btn btn-ghost btn-sm" data-action="add-tx" data-asset="${p.asset_id}">加仓</button>
                 ${bank ? '' : `<button class="btn btn-ghost btn-sm" data-action="asset-price" data-asset="${p.asset_id}">价格</button>`}
                 ${p.quote_source && p.quote_source !== 'manual' && p.quote_source !== 'accrual' ? `<button class="btn btn-ghost btn-sm" data-action="backfill-asset" data-asset="${p.asset_id}">同步</button>` : ''}
@@ -862,6 +863,10 @@ async function handleAction(el) {
     try {
         if (action === 'add-tx') {
             openTransactionModal(Number(el.dataset.asset));
+        } else if (action === 'edit-holding') {
+            await openHoldingEditor(
+                Number(el.dataset.asset),
+                el.dataset.account === '' ? null : Number(el.dataset.account));
         } else if (action === 'edit-tx') {
             let tx = state.transactions.find(t => String(t.id) === String(el.dataset.tx));
             if (!tx) tx = await api('/api/wm/transactions/' + el.dataset.tx);
@@ -869,6 +874,7 @@ async function handleAction(el) {
         } else if (action === 'delete-tx') {
             if (!confirm('删除这笔交易？持仓和盈亏会立即重算。')) return;
             await api('/api/wm/transactions/' + el.dataset.tx, { method: 'DELETE' });
+            if ($('#modalRoot')?.classList.contains('open')) closeModal();
             toast('已删除', 'success');
             await refreshAll();
             await loadTransactions(state.txPage);
@@ -1318,6 +1324,64 @@ function openAccountModal(account = null) {
             if (submitBtn) submitBtn.disabled = false;
         }
     });
+}
+
+/* ── holding editor ─────────────────────────────────────────── */
+async function openHoldingEditor(assetId, accountId = null) {
+    const position = state.positions.find(p => Number(p.asset_id) === assetId
+        && (p.account_id ?? null) === accountId);
+    const params = new URLSearchParams({ asset_id: String(assetId), per_page: '500' });
+    params.set('account_id', accountId === null ? 'none' : String(accountId));
+    let data;
+    try {
+        data = await api('/api/wm/transactions?' + params.toString());
+    } catch (err) {
+        return toast(err.message, 'error');
+    }
+    const txs = data.transactions || [];
+    const bank = position?.valuation_mode === 'accrual';
+    const summary = position
+        ? `<div class="muted" style="line-height:1.6;margin-top:8px">
+             ${bank
+                 ? `当前本金 ${fmtCcy(position.principal, position.currency)}`
+                 : `当前数量 ${fmtNum(position.units, 4)} · 均价 ${fmtNum(position.avg_cost_native, 4)} · 成本 ${fmtCcy(position.cost_native, position.currency)}`}
+             ${position.account_name ? ` · ${esc(position.account_name)}` : ' · 无账户'}
+           </div>`
+        : '';
+    const rows = txs.length ? txs.map(t => {
+        const editable = t.source !== 'dca';
+        const units = t.type === 'split' ? '—' : (t.units ? fmtNum(t.units, 4) : '—');
+        const price = bank || t.type === 'split' ? '—' : (t.price ? fmtNum(t.price, 4) : '—');
+        const amount = t.type === 'split' ? '—' : fmtCcy(t.amount, t.currency);
+        return `<tr>
+            <td>${esc(t.trade_date)}</td>
+            <td>${typeTag(t.type)}</td>
+            <td class="num">${bank ? '—' : units}</td>
+            <td class="num">${price}</td>
+            <td class="num">${amount}</td>
+            <td class="num">${fmtCcy(t.fee, t.currency)}</td>
+            <td>${sourceTag(t.source)}</td>
+            <td><div class="row-actions">${editable
+                ? `<button class="btn btn-ghost btn-sm" data-action="edit-tx" data-tx="${t.id}">编辑</button>
+                   <button class="btn btn-danger btn-sm" data-action="delete-tx" data-tx="${t.id}">删除</button>`
+                : '<span class="muted">自动</span>'}</div></td>
+        </tr>`;
+    }).join('') : '<tr><td colspan="8"><div class="empty">没有找到该持仓的交易</div></td></tr>';
+    const html = `<div>
+        <div class="alert alert-info">持仓由交易自动计算。哪一笔填错了，直接编辑或删除它，保存后持仓和盈亏会立即重算；定投自动生成的交易请在定投页处理。</div>
+        ${summary}
+        <div class="table-wrap" style="margin-top:10px;max-height:46vh;overflow:auto">
+            <table>
+                <thead><tr><th>日期</th><th>类型</th><th class="num">数量</th><th class="num">价格</th><th class="num">金额</th><th class="num">费用</th><th>来源</th><th></th></tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>
+        <div class="form-actions">
+            <button type="button" class="btn btn-ghost" data-close>关闭</button>
+        </div>
+    </div>`;
+    openModal(`编辑持仓 · ${position?.name || '持仓'}`, html);
+    $('#modalBody [data-close]')?.addEventListener('click', closeModal);
 }
 
 /* ── transaction modal ─────────────────────────────────────── */

@@ -901,6 +901,145 @@ class RoutesApiTests(unittest.TestCase):
                        if a['id'] == account_id)
         self.assertAlmostEqual(account['cash_balances'][0]['amount'], 1000.0)
 
+    def _position(self, asset_id, account_id):
+        positions = self.client.get('/api/wm/positions').get_json()['positions']
+        return next(p for p in positions
+                    if p['asset_id'] == asset_id and p['account_id'] == account_id)
+
+    def _adjust_transactions(self, asset_id):
+        rows = self.client.get(
+            f'/api/wm/transactions?asset_id={asset_id}').get_json()['transactions']
+        return [row for row in rows if row['type'] == 'adjust']
+
+    def _create_account(self, name='持仓修正账户', cash=1000):
+        response = self.client.post('/api/wm/accounts', json={
+            'name': name, 'currency': 'CNY',
+            'cash_balances': [{'currency': 'CNY', 'amount': cash,
+                               'balance_date': today_str()}],
+        })
+        self.assertEqual(response.status_code, 201, response.get_json())
+        return response.get_json()['id']
+
+    def test_position_adjust_api_updates_without_cash(self):
+        asset_id = self._create_asset()
+        account_id = self._create_account()
+        today = today_str()
+        response = self.client.post('/api/wm/transactions', json={
+            'asset_id': asset_id, 'account_id': account_id, 'type': 'buy',
+            'trade_date': today, 'units': 10, 'price': 10, 'amount': 100,
+            'fee': 0, 'currency': 'CNY',
+        })
+        self.assertEqual(response.status_code, 201, response.get_json())
+
+        response = self.client.post('/api/wm/positions/adjust', json={
+            'asset_id': asset_id, 'account_id': account_id,
+            'units': 12, 'cost_native': 120,
+        })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertTrue(response.get_json()['changed'])
+        position = self._position(asset_id, account_id)
+        self.assertAlmostEqual(position['units'], 12.0)
+        self.assertAlmostEqual(position['cost_native'], 120.0)
+        self.assertAlmostEqual(position['avg_cost_native'], 10.0)
+        account = next(a for a in self.client.get('/api/wm/accounts').get_json()
+                       if a['id'] == account_id)
+        self.assertAlmostEqual(account['cash_balances'][0]['amount'], 900.0)
+        self.assertEqual(len(self._adjust_transactions(asset_id)), 1)
+
+        history = self.client.get(
+            f'/api/wm/history?start={today}&end={today}').get_json()['points']
+        self.assertAlmostEqual(history[-1]['value'], 120.0)
+
+        # A second correction updates the same adjustment row.
+        response = self.client.post('/api/wm/positions/adjust', json={
+            'asset_id': asset_id, 'account_id': account_id,
+            'units': 15, 'cost_native': 150,
+        })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(len(self._adjust_transactions(asset_id)), 1)
+        position = self._position(asset_id, account_id)
+        self.assertAlmostEqual(position['units'], 15.0)
+        self.assertAlmostEqual(position['cost_native'], 150.0)
+
+        # Restoring the original totals removes the correction entirely.
+        response = self.client.post('/api/wm/positions/adjust', json={
+            'asset_id': asset_id, 'account_id': account_id,
+            'units': 10, 'cost_native': 100,
+        })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertTrue(response.get_json()['removed'])
+        self.assertEqual(len(self._adjust_transactions(asset_id)), 0)
+        position = self._position(asset_id, account_id)
+        self.assertAlmostEqual(position['units'], 10.0)
+        self.assertAlmostEqual(position['cost_native'], 100.0)
+
+    def test_position_adjust_api_works_for_dca_source(self):
+        asset_id = self._create_asset()
+        account_id = self._create_account('定投修正账户')
+        today = today_str()
+        response = self.client.post('/api/wm/transactions', json={
+            'asset_id': asset_id, 'account_id': account_id, 'type': 'buy',
+            'trade_date': today, 'units': 10, 'price': 10, 'amount': 100,
+            'fee': 0, 'currency': 'CNY',
+        })
+        self.assertEqual(response.status_code, 201, response.get_json())
+        tx_id = response.get_json()['id']
+        conn = connect(self.db_path)
+        conn.execute("UPDATE wm_transaction SET source = 'dca' WHERE id = ?", (tx_id,))
+        conn.commit()
+        conn.close()
+
+        response = self.client.put(f'/api/wm/transactions/{tx_id}', json={})
+        self.assertEqual(response.status_code, 409, response.get_json())
+
+        response = self.client.post('/api/wm/positions/adjust', json={
+            'asset_id': asset_id, 'account_id': account_id,
+            'units': 20, 'cost_native': 200,
+        })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        position = self._position(asset_id, account_id)
+        self.assertAlmostEqual(position['units'], 20.0)
+        self.assertAlmostEqual(position['cost_native'], 200.0)
+
+        # The correction participates in sell validation.
+        response = self.client.post('/api/wm/transactions', json={
+            'asset_id': asset_id, 'account_id': account_id, 'type': 'sell',
+            'trade_date': today, 'units': 15, 'price': 10, 'amount': 150,
+            'fee': 0, 'currency': 'CNY',
+        })
+        self.assertEqual(response.status_code, 201, response.get_json())
+        position = self._position(asset_id, account_id)
+        self.assertAlmostEqual(position['units'], 5.0)
+        self.assertAlmostEqual(position['cost_native'], 50.0)
+
+    def test_position_adjust_api_bank_principal(self):
+        response = self.client.post('/api/wm/assets', json={
+            'symbol': 'BANK-ADJ', 'market': 'BANK', 'asset_class': 'bank_wm',
+            'name': '银行修正', 'currency': 'CNY', 'quote_source': 'accrual',
+            'annual_rate': 0.02,
+        })
+        self.assertEqual(response.status_code, 201, response.get_json())
+        asset_id = response.get_json()['id']
+        account_id = self._create_account('银行修正账户', cash=10000)
+        today = today_str()
+        response = self.client.post('/api/wm/transactions', json={
+            'asset_id': asset_id, 'account_id': account_id, 'type': 'buy',
+            'trade_date': today, 'units': 1000, 'price': 1, 'amount': 1000,
+            'fee': 10, 'currency': 'CNY',
+        })
+        self.assertEqual(response.status_code, 201, response.get_json())
+
+        response = self.client.post('/api/wm/positions/adjust', json={
+            'asset_id': asset_id, 'account_id': account_id, 'units': 1200,
+        })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        position = self._position(asset_id, account_id)
+        self.assertAlmostEqual(position['principal'], 1200.0)
+        self.assertAlmostEqual(position['cost_native'], 1200.0)
+        account = next(a for a in self.client.get('/api/wm/accounts').get_json()
+                       if a['id'] == account_id)
+        self.assertAlmostEqual(account['cash_balances'][0]['amount'], 8990.0)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -15,9 +15,9 @@ const CLASS_LABELS = {
 };
 const TYPE_LABELS = {
     buy: '买入', sell: '卖出', dividend: '分红', reinvest: '分红再投',
-    interest: '利息', fee: '费用', split: '拆分',
+    interest: '利息', fee: '费用', split: '拆分', adjust: '持仓修正',
 };
-const SOURCE_LABELS = { manual: '手动', import: '导入', dca: '定投' };
+const SOURCE_LABELS = { manual: '手动', import: '导入', dca: '定投', adjust: '修正' };
 const STATUS_LABELS = {
     awaiting_price: '等价格', filled: '已入账', skipped: '已跳过', failed: '失败',
 };
@@ -510,7 +510,10 @@ function renderTransactions() {
         body.innerHTML = '<tr><td colspan="11"><div class="empty">暂无交易</div></td></tr>';
     } else {
         body.innerHTML = state.transactions.map(t => {
-            const editable = t.source !== 'dca';
+            const automatic = t.source === 'dca';
+            const isAdjust = t.type === 'adjust';
+            const canEdit = !automatic && !isAdjust;
+            const canDelete = !automatic;
             return `<tr>
                 <td>${esc(t.trade_date)}</td>
                 <td><div class="asset-cell"><span class="name">${esc(t.asset_name)}</span><span class="code">${esc(t.symbol)}</span></div></td>
@@ -523,8 +526,9 @@ function renderTransactions() {
                 <td>${esc(t.account_name || '—')}</td>
                 <td class="muted" style="max-width:200px">${esc(t.note || '')}</td>
                 <td><div class="row-actions">
-                    ${editable ? `<button class="btn btn-ghost btn-sm" data-action="edit-tx" data-tx="${t.id}">编辑</button>
-                    <button class="btn btn-danger btn-sm" data-action="delete-tx" data-tx="${t.id}">删除</button>` : '<span class="muted">自动</span>'}
+                    ${automatic ? '<span class="muted">自动</span>' : `
+                    ${canEdit ? `<button class="btn btn-ghost btn-sm" data-action="edit-tx" data-tx="${t.id}">编辑</button>` : ''}
+                    ${canDelete ? `<button class="btn btn-danger btn-sm" data-action="delete-tx" data-tx="${t.id}"${isAdjust ? ' data-adjust="1"' : ''}>${isAdjust ? '撤销' : '删除'}</button>` : ''}`}
                 </div></td>
             </tr>`;
         }).join('');
@@ -849,9 +853,6 @@ function bindEvents() {
         loadOrders();
     });
     $('#modalClose')?.addEventListener('click', closeModal);
-    $('#modalRoot')?.addEventListener('click', event => {
-        if (event.target === $('#modalRoot')) closeModal();
-    });
     document.addEventListener('keydown', event => {
         if (event.key === 'Escape') closeModal();
     });
@@ -872,10 +873,11 @@ async function handleAction(el) {
             if (!tx) tx = await api('/api/wm/transactions/' + el.dataset.tx);
             openTransactionModal(null, tx);
         } else if (action === 'delete-tx') {
-            if (!confirm('删除这笔交易？持仓和盈亏会立即重算。')) return;
+            const adjust = el.dataset.adjust === '1';
+            if (!confirm(adjust ? '撤销这笔持仓修正？' : '删除这笔交易？持仓和盈亏会立即重算。')) return;
             await api('/api/wm/transactions/' + el.dataset.tx, { method: 'DELETE' });
             if ($('#modalRoot')?.classList.contains('open')) closeModal();
-            toast('已删除', 'success');
+            toast(adjust ? '已撤销修正' : '已删除', 'success');
             await refreshAll();
             await loadTransactions(state.txPage);
         } else if (action === 'asset-price') {
@@ -1340,16 +1342,16 @@ async function openHoldingEditor(assetId, accountId = null) {
     }
     const txs = data.transactions || [];
     const bank = position?.valuation_mode === 'accrual';
-    const summary = position
-        ? `<div class="muted" style="line-height:1.6;margin-top:8px">
-             ${bank
-                 ? `当前本金 ${fmtCcy(position.principal, position.currency)}`
-                 : `当前数量 ${fmtNum(position.units, 4)} · 均价 ${fmtNum(position.avg_cost_native, 4)} · 成本 ${fmtCcy(position.cost_native, position.currency)}`}
-             ${position.account_name ? ` · ${esc(position.account_name)}` : ' · 无账户'}
-           </div>`
-        : '';
+    const currency = position?.currency || 'CNY';
+    const currentUnits = bank ? Number(position?.principal || 0) : Number(position?.units || 0);
+    const currentAvg = bank ? 1 : Number(position?.avg_cost_native || 0);
+    const currentCost = bank ? currentUnits : Number(position?.cost_native || 0);
+    const accountText = position?.account_name ? esc(position.account_name) : '无账户';
     const rows = txs.length ? txs.map(t => {
-        const editable = t.source !== 'dca';
+        const automatic = t.source === 'dca';
+        const isAdjust = t.type === 'adjust';
+        const canEdit = !automatic && !isAdjust;
+        const canDelete = !automatic;
         const units = t.type === 'split' ? '—' : (t.units ? fmtNum(t.units, 4) : '—');
         const price = bank || t.type === 'split' ? '—' : (t.price ? fmtNum(t.price, 4) : '—');
         const amount = t.type === 'split' ? '—' : fmtCcy(t.amount, t.currency);
@@ -1361,27 +1363,81 @@ async function openHoldingEditor(assetId, accountId = null) {
             <td class="num">${amount}</td>
             <td class="num">${fmtCcy(t.fee, t.currency)}</td>
             <td>${sourceTag(t.source)}</td>
-            <td><div class="row-actions">${editable
-                ? `<button class="btn btn-ghost btn-sm" data-action="edit-tx" data-tx="${t.id}">编辑</button>
-                   <button class="btn btn-danger btn-sm" data-action="delete-tx" data-tx="${t.id}">删除</button>`
-                : '<span class="muted">自动</span>'}</div></td>
+            <td><div class="row-actions">${automatic
+                ? '<span class="muted">自动</span>'
+                : `${canEdit ? `<button class="btn btn-ghost btn-sm" data-action="edit-tx" data-tx="${t.id}">编辑</button>` : ''}
+                   ${canDelete ? `<button class="btn btn-danger btn-sm" data-action="delete-tx" data-tx="${t.id}"${isAdjust ? ' data-adjust="1"' : ''}>${isAdjust ? '撤销' : '删除'}</button>` : ''}`}</div></td>
         </tr>`;
     }).join('') : '<tr><td colspan="8"><div class="empty">没有找到该持仓的交易</div></td></tr>';
     const html = `<div>
-        <div class="alert alert-info">持仓由交易自动计算。哪一笔填错了，直接编辑或删除它，保存后持仓和盈亏会立即重算；定投自动生成的交易请在定投页处理。</div>
-        ${summary}
-        <div class="table-wrap" style="margin-top:10px;max-height:46vh;overflow:auto">
-            <table>
-                <thead><tr><th>日期</th><th>类型</th><th class="num">数量</th><th class="num">价格</th><th class="num">金额</th><th class="num">费用</th><th>来源</th><th></th></tr></thead>
-                <tbody>${rows}</tbody>
-            </table>
-        </div>
-        <div class="form-actions">
-            <button type="button" class="btn btn-ghost" data-close>关闭</button>
-        </div>
+        <div class="alert alert-info">直接修改当前持仓。保存后会生成一笔“持仓修正”，只修正数量和成本，不改变账户现金；定投生成的原始交易保持只读。</div>
+        <form id="holdingForm">
+            <div class="form-grid">
+                ${field(bank ? '当前本金' : '当前数量 / 份额', `<input type="number" step="any" min="0" name="units" id="holdingUnits" value="${currentUnits}">`, '', bank ? 'full' : '')}
+                ${bank ? '' : field('成本均价', `<input type="number" step="any" min="0" name="avg_cost" id="holdingAvg" value="${currentAvg}">`)}
+                ${field('成本金额', `<input type="number" step="any" id="holdingCost" value="${currentCost}" readonly tabindex="-1">`, '', 'full')}
+            </div>
+            <div class="muted" style="margin-top:8px;font-size:0.72rem">账户：${accountText} · 币种：${esc(currency)}</div>
+            <div class="form-actions">
+                <button type="button" class="btn btn-ghost" data-close>取消</button>
+                <button type="submit" class="btn btn-primary">保存持仓</button>
+            </div>
+        </form>
+        <details style="margin-top:14px">
+            <summary class="muted" style="cursor:pointer">查看原始交易（手动交易可逐笔修改，持仓修正可撤销）</summary>
+            <div class="table-wrap" style="margin-top:10px;max-height:40vh;overflow:auto">
+                <table>
+                    <thead><tr><th>日期</th><th>类型</th><th class="num">数量</th><th class="num">价格</th><th class="num">金额</th><th class="num">费用</th><th>来源</th><th></th></tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+        </details>
     </div>`;
     openModal(`编辑持仓 · ${position?.name || '持仓'}`, html);
     $('#modalBody [data-close]')?.addEventListener('click', closeModal);
+
+    const unitsInput = $('#holdingUnits');
+    const avgInput = $('#holdingAvg');
+    const costInput = $('#holdingCost');
+    const syncCost = () => {
+        const units = numberOrNull(unitsInput?.value) ?? 0;
+        const avg = bank ? 1 : (numberOrNull(avgInput?.value) ?? 0);
+        costInput.value = String(Number((units * avg).toFixed(8)));
+    };
+    unitsInput?.addEventListener('input', syncCost);
+    avgInput?.addEventListener('input', syncCost);
+
+    $('#holdingForm')?.addEventListener('submit', async event => {
+        event.preventDefault();
+        const units = numberOrNull(unitsInput?.value);
+        const avg = bank ? 1 : numberOrNull(avgInput?.value);
+        if (units === null || units < 0) return toast('数量 / 本金不能小于 0', 'error');
+        if (!bank && (avg === null || avg < 0)) return toast('成本均价不能小于 0', 'error');
+        const cost = numberOrNull(costInput?.value);
+        if (cost === null || cost < 0) return toast('成本金额不能小于 0', 'error');
+        const submitBtn = event.submitter || event.target.querySelector('button[type="submit"]');
+        if (submitBtn) submitBtn.disabled = true;
+        try {
+            const result = await api('/api/wm/positions/adjust', {
+                method: 'POST',
+                body: {
+                    asset_id: assetId,
+                    account_id: accountId,
+                    units,
+                    cost_native: cost,
+                },
+            });
+            closeModal();
+            toast(result.removed ? '已恢复原始持仓'
+                : result.changed ? '持仓已修正' : '持仓没有变化',
+            result.changed ? 'success' : '');
+            await refreshAll();
+            await loadTransactions(state.txPage);
+        } catch (err) {
+            toast(err.message, 'error');
+            if (submitBtn) submitBtn.disabled = false;
+        }
+    });
 }
 
 /* ── transaction modal ─────────────────────────────────────── */

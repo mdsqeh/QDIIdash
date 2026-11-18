@@ -17,7 +17,9 @@ from werkzeug.exceptions import HTTPException
 from . import dca, prices
 from .cash import apply_transaction_cash, reverse_transaction_cash
 from .db import DB_PATH, SHANGHAI_TZ, close_db, connect, get_db, iso, now_iso, today_str
-from .portfolio import (account_cash, build_history, build_positions, build_summary, parse_date)
+from .portfolio import (account_cash, build_history, build_positions, build_summary,
+                        compute_position, fx_rate as portfolio_fx_rate,
+                        latest_price, parse_date)
 from .schema import init_wealth_db
 
 wealth_bp = Blueprint('wealth', __name__)
@@ -26,7 +28,7 @@ RANGES = {'1m': 30, '3m': 90, '6m': 180, '1y': 365, '3y': 1095, 'all': None}
 MARKETS = {'CN', 'US', 'HK', 'FUND_CN', 'CRYPTO', 'BANK', 'MANUAL'}
 CLASSES = {'stock', 'etf', 'fund', 'crypto', 'bank_wm', 'other'}
 FREQUENCIES = {'daily', 'weekly', 'biweekly', 'monthly'}
-TX_TYPES = {'buy', 'sell', 'dividend', 'reinvest', 'fee', 'interest', 'split'}
+TX_TYPES = {'buy', 'sell', 'dividend', 'reinvest', 'fee', 'interest', 'split', 'adjust'}
 ASSET_CURRENCIES = {'CNY', 'USD', 'HKD'}
 MARKET_DEFAULT_CURRENCY = {
     'CN': 'CNY', 'FUND_CN': 'CNY', 'BANK': 'CNY',
@@ -389,6 +391,8 @@ def _units_before(conn, asset_id, on_date, exclude_id=None, account_id=None):
             units += float(r['units'] or 0)
         elif r['type'] == 'sell':
             units -= float(r['units'] or 0)
+        elif r['type'] == 'adjust':
+            units += float(r['units'] or 0)
         elif r['type'] == 'split':
             units *= float(r['split_ratio'] or r['units'] or 1)
     return units
@@ -412,6 +416,8 @@ def _principal_before(conn, asset_id, on_date, exclude_id=None, account_id=None)
             principal += float(r['amount'] or 0)
         elif r['type'] == 'sell':
             principal -= float(r['amount'] or 0)
+        elif r['type'] == 'adjust':
+            principal += float(r['amount'] or 0)
     return principal
 
 
@@ -429,7 +435,7 @@ def _create_transaction(conn, data, source='manual', import_hash=None, affect_ca
         account = _account(conn, account_id)
         if not account:
             raise ValueError('账户不存在')
-    cash_adjusted = 1 if affect_cash and account_id else 0
+    cash_adjusted = 1 if affect_cash and account_id and tx_type != 'adjust' else 0
     provided_currency = str(data.get('currency') or '').upper()
     if provided_currency and provided_currency != str(asset.get('currency') or 'CNY').upper():
         raise ValueError(f'交易币种 {provided_currency} 与资产币种 {asset.get("currency")} 不一致')
@@ -440,7 +446,15 @@ def _create_transaction(conn, data, source='manual', import_hash=None, affect_ca
     amount = _num(data.get('amount'), 0)
     split_ratio = _num(data.get('split_ratio'), 0)
 
-    if asset.get('valuation_mode') == 'accrual':
+    if tx_type == 'adjust':
+        if asset.get('valuation_mode') == 'accrual':
+            units, price = amount, 0.0
+        else:
+            price = 0.0
+        fee = 0.0
+        if abs(units) < 1e-12 and abs(amount) < 1e-12:
+            raise ValueError('修正数量和金额不能同时为 0')
+    elif asset.get('valuation_mode') == 'accrual':
         if tx_type not in ('buy', 'sell', 'interest', 'fee'):
             raise ValueError('银行理财只支持买入、赎回、利息和费用')
         if tx_type in ('buy', 'sell'):
@@ -628,6 +642,99 @@ def api_positions():
     as_of = parse_date(request.args.get('as_of') or today_str())
     positions, total = build_positions(conn, as_of)
     return jsonify({'as_of': iso(as_of), 'total': total, 'positions': positions})
+
+
+def _position_base(conn, asset, account_id, as_of):
+    """Position from real trades, excluding the editable correction row."""
+    sql = """SELECT * FROM wm_transaction
+             WHERE asset_id = ? AND trade_date <= ?
+               AND COALESCE(source, 'manual') != 'adjust'"""
+    params = [asset['id'], iso(as_of)]
+    if account_id is None:
+        sql += ' AND account_id IS NULL'
+    else:
+        sql += ' AND account_id = ?'
+        params.append(account_id)
+    sql += ' ORDER BY trade_date, id'
+    txs = [dict(r) for r in conn.execute(sql, params).fetchall()]
+    fx_cache = {}
+
+    def fx_fn(currency, on_date):
+        key = ((currency or 'CNY').upper(), iso(on_date))
+        if key not in fx_cache:
+            fx_cache[key] = portfolio_fx_rate(conn, key[0], key[1])
+        return fx_cache[key]
+
+    return compute_position(
+        asset, txs, as_of, price=latest_price(conn, asset['id'], as_of), fx_fn=fx_fn)
+
+
+@wealth_bp.route('/api/wm/positions/adjust', methods=['POST'])
+def api_position_adjust():
+    conn = get_db()
+    data = _body()
+    asset = _asset(conn, int(data.get('asset_id') or 0))
+    if not asset:
+        return _error('资产不存在', 404)
+    try:
+        account_id = data.get('account_id')
+        account_id = None if account_id in (None, '', 0, '0') else int(account_id)
+        if account_id and not _account(conn, account_id):
+            raise ValueError('账户不存在')
+        units = _num(data.get('units'), None)
+        cost = _num(data.get('cost_native'), None)
+        if units is None:
+            raise ValueError('数量或成本格式不正确')
+        if not math.isfinite(units):
+            raise ValueError('数量或成本格式不正确')
+        if units < 0:
+            raise ValueError('数量和成本不能为负数')
+        bank = (asset.get('valuation_mode') or 'price') == 'accrual'
+        if bank:
+            cost = units
+        else:
+            if cost is None or not math.isfinite(cost):
+                raise ValueError('数量或成本格式不正确')
+            if cost < 0:
+                raise ValueError('数量和成本不能为负数')
+            if units <= 1e-12:
+                cost = 0.0
+        as_of = parse_date(data.get('trade_date') or today_str())
+        base = _position_base(conn, asset, account_id, as_of)
+        delta_units = units - float(base.get('units') or 0)
+        delta_cost = cost - float(base.get('cost_native') or 0)
+
+        sql = "SELECT * FROM wm_transaction WHERE asset_id = ? AND source = 'adjust'"
+        params = [asset['id']]
+        if account_id is None:
+            sql += ' AND account_id IS NULL'
+        else:
+            sql += ' AND account_id = ?'
+            params.append(account_id)
+        existing = conn.execute(sql, params).fetchall()
+        for row in existing:
+            if row['cash_adjusted']:
+                reverse_transaction_cash(conn, row)
+            conn.execute('DELETE FROM wm_transaction WHERE id = ?', (row['id'],))
+
+        if abs(delta_units) < 1e-9 and abs(delta_cost) < 1e-9:
+            conn.commit()
+            return jsonify({'ok': True, 'changed': bool(existing),
+                            'removed': bool(existing)})
+
+        tx_id = _create_transaction(conn, {
+            'asset_id': asset['id'], 'account_id': account_id, 'type': 'adjust',
+            'trade_date': iso(as_of), 'units': delta_units, 'amount': delta_cost,
+            'fee': 0, 'currency': asset['currency'],
+            'note': str(data.get('note') or '持仓修正'),
+        }, source='adjust', affect_cash=False)
+        if tx_id is None:
+            raise ValueError('无法保存持仓修正')
+        conn.commit()
+        return jsonify({'ok': True, 'changed': True, 'removed': False, 'id': tx_id})
+    except (ValueError, TypeError, prices.PriceError) as exc:
+        conn.rollback()
+        return _error(str(exc))
 
 
 # ── assets ────────────────────────────────────────────────────────
@@ -1060,6 +1167,8 @@ def api_transaction(tx_id):
         return jsonify(_transaction_row(conn, tx_id))
     if row['source'] == 'dca':
         return _error('定投生成的交易请在定投页操作，不能直接编辑', 409)
+    if request.method == 'PUT' and row['type'] == 'adjust':
+        return _error('持仓修正记录不能直接编辑，请重新编辑持仓', 409)
     if request.method == 'DELETE':
         if row['cash_adjusted']:
             reverse_transaction_cash(conn, row)

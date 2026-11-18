@@ -197,6 +197,10 @@ def compute_position(asset, txs, as_of, price=None, fx_fn=None):
             realized_native -= amount
             realized_cny -= amount * fx
             fees_cny += amount * fx
+        elif tx_type == 'adjust':
+            units += float(tx['units'] or 0)
+            cost_native += amount
+            cost_cny += amount * fx
         elif tx_type == 'split':
             units *= _split_units(tx)
         else:
@@ -312,6 +316,10 @@ def _compute_bank_position(asset, txs, as_of, fx_fn):
             elif tx_type == 'fee':
                 fees += amount
                 realized_cny -= amount * fx
+            elif tx_type == 'adjust':
+                principal += amount
+                cost_native += amount
+                cost_cny += amount * fx
             else:
                 warnings.append(f'银行理财忽略交易类型 {tx_type}')
 
@@ -683,6 +691,10 @@ def build_history(conn, start, end):
                     elif typ == 'fee':
                         st['fees'] += amount
                         st['realized_cny'] -= amount * fx
+                    elif typ == 'adjust':
+                        st['principal'] += amount
+                        st['cost_native'] += amount
+                        st['cost_cny'] += amount * fx
                     continue
 
                 if typ == 'buy':
@@ -714,6 +726,10 @@ def build_history(conn, start, end):
                     st['cost_cny'] += amount * fx
                 elif typ == 'fee':
                     st['realized_cny'] -= amount * fx
+                elif typ == 'adjust':
+                    st['units'] += float(tx['units'] or 0)
+                    st['cost_native'] += amount
+                    st['cost_cny'] += amount * fx
                 elif typ == 'split':
                     st['units'] *= _split_units(tx)
 

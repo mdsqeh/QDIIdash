@@ -1462,7 +1462,17 @@ def api_dca_summary():
     if period not in ('day', 'week', 'month', 'year'):
         period = 'day'
     as_of = parse_date(request.args.get('as_of') or today_str())
-    return jsonify(dca.summary(get_db(), period, as_of=as_of))
+    raw_account = request.args.get('account_id')
+    if raw_account in (None, '', 'all'):
+        account_id = 'all'
+    elif raw_account in ('none', '0'):
+        account_id = 'none'
+    else:
+        try:
+            account_id = int(raw_account)
+        except (TypeError, ValueError):
+            return _error('账户参数无效')
+    return jsonify(dca.summary(get_db(), period, as_of=as_of, account_id=account_id))
 
 
 @wealth_bp.route('/api/wm/dca/orders')

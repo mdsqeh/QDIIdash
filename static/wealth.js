@@ -37,6 +37,7 @@ const state = {
     status: null,
     dcaSummary: null,
     dcaPeriod: 'day',
+    dcaAccount: 'all',
     range: '1y',
     tab: 'overview',
     txPage: 1,
@@ -179,6 +180,12 @@ async function boot() {
     setTimeout(() => resizeCharts(), 80);
 }
 
+function dcaSummaryUrl() {
+    const params = new URLSearchParams({ period: state.dcaPeriod });
+    if (state.dcaAccount !== 'all') params.set('account_id', state.dcaAccount);
+    return '/api/wm/dca/summary?' + params.toString();
+}
+
 async function refreshAll() {
     try {
         const [summary, positions, assets, accounts, plans, orders, status, dcaSummary] = await Promise.all([
@@ -189,7 +196,7 @@ async function refreshAll() {
             api('/api/wm/dca/plans'),
             api('/api/wm/dca/orders' + (state.orderFilter ? '?status=' + encodeURIComponent(state.orderFilter) : '')),
             api('/api/wm/status'),
-            api('/api/wm/dca/summary?period=' + encodeURIComponent(state.dcaPeriod)),
+            api(dcaSummaryUrl()),
         ]);
         state.summary = summary;
         state.positions = positions.positions || [];
@@ -232,7 +239,7 @@ async function loadOrders() {
 
 async function loadDcaSummary() {
     try {
-        state.dcaSummary = await api('/api/wm/dca/summary?period=' + encodeURIComponent(state.dcaPeriod));
+        state.dcaSummary = await api(dcaSummaryUrl());
         renderDcaSummary();
     } catch (err) {
         toast(err.message, 'error');
@@ -262,6 +269,7 @@ function renderAll() {
     renderMetrics();
     renderAssetFilters();
     renderAccountFilters();
+    renderDcaAccountFilter();
     renderHoldings();
     renderAccounts();
     renderPlans();
@@ -321,6 +329,23 @@ function fillAccountFilter(select) {
 function renderAccountFilters() {
     fillAccountFilter($('#txAccountFilter'));
     fillAccountFilter($('#holdingsAccountFilter'));
+}
+
+function renderDcaAccountFilter() {
+    const select = $('#dcaAccountFilter');
+    if (!select) return;
+    const accounts = state.accounts || [];
+    if (state.dcaAccount !== 'all' && state.dcaAccount !== 'none'
+        && !accounts.some(a => String(a.id) === String(state.dcaAccount))) {
+        state.dcaAccount = 'all';
+    }
+    const options = ['<option value="all">全部账户</option>'];
+    for (const account of accounts) {
+        options.push(`<option value="${account.id}">${esc(account.name)}${account.is_active ? '' : '（停用）'}</option>`);
+    }
+    options.push('<option value="none">未分配账户</option>');
+    select.innerHTML = options.join('');
+    select.value = state.dcaAccount;
 }
 
 function renderHoldings() {
@@ -814,14 +839,18 @@ function renderDcaSummary() {
     const period = data.period || state.dcaPeriod;
     const label = DCA_PERIOD_LABELS[period] || '日';
     const scope = DCA_PERIOD_SCOPES[period] || '本周期';
+    const accountSelect = $('#dcaAccountFilter');
+    const accountLabel = state.dcaAccount === 'all'
+        ? '全部账户'
+        : (accountSelect?.selectedOptions?.[0]?.textContent || '当前账户');
     const plan = Number(data.plan?.cny) || 0;
     const actual = Number(data.actual?.cny) || 0;
     $('#dcaPlanPeriod').textContent = label;
     $('#dcaActualPeriod').textContent = scope;
     $('#dcaPlanTotal').textContent = fmtMoney(plan);
     $('#dcaActualTotal').textContent = fmtMoney(actual);
-    $('#dcaPlanSub').textContent = `当前运行中计划折算 / ${label}`;
-    $('#dcaActualSub').textContent = `${scope}已成交`;
+    $('#dcaPlanSub').textContent = `${accountLabel} · 计划折算 / ${label}`;
+    $('#dcaActualSub').textContent = `${accountLabel} · ${scope}已成交`;
     renderDcaCurrencyBreakdown(data);
 
     const chart = getChart('dcaSummaryChart');
@@ -984,6 +1013,10 @@ function bindEvents() {
         if (!btn) return;
         state.dcaPeriod = btn.dataset.period;
         $$('#dcaPeriodBtns button').forEach(b => b.classList.toggle('active', b === btn));
+        loadDcaSummary();
+    });
+    $('#dcaAccountFilter')?.addEventListener('change', event => {
+        state.dcaAccount = event.target.value;
         loadDcaSummary();
     });
     $('#modalClose')?.addEventListener('click', closeModal);

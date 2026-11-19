@@ -525,7 +525,7 @@ def _summary_fx(conn, currency, on_date, missing):
     return float(rate)
 
 
-def summary(conn, period='day', as_of=None):
+def summary(conn, period='day', as_of=None, account_id='all'):
     """Current DCA commitment and actual filled amount by day/week/month/year."""
     period = period if period in SUMMARY_PERIODS else 'day'
     as_of = parse_date(as_of or today_str())
@@ -535,10 +535,16 @@ def summary(conn, period='day', as_of=None):
     plan_cny = 0.0
 
     plans = conn.execute(
-        """SELECT amount, amount_currency, frequency, start_date, end_date
+        """SELECT amount, amount_currency, frequency, start_date, end_date, account_id
            FROM wm_dca_plan WHERE status = 'active'"""
     ).fetchall()
     for plan in plans:
+        if account_id != 'all':
+            if account_id == 'none':
+                if plan['account_id'] is not None:
+                    continue
+            elif plan['account_id'] != account_id:
+                continue
         start = parse_date(plan['start_date'])
         end = parse_date(plan['end_date']) if plan['end_date'] else None
         if start > as_of or (end and end < as_of):
@@ -565,9 +571,12 @@ def summary(conn, period='day', as_of=None):
         """SELECT o.trade_date, o.due_date, o.amount AS order_amount,
                   o.amount_currency AS order_currency,
                   t.amount AS tx_amount, t.fee AS tx_fee,
-                  t.currency AS tx_currency, t.fx_rate AS tx_fx
+                  t.currency AS tx_currency, t.fx_rate AS tx_fx,
+                  t.account_id AS tx_account_id,
+                  p.account_id AS plan_account_id
            FROM wm_dca_order o
            LEFT JOIN wm_transaction t ON t.dca_order_id = o.id
+           LEFT JOIN wm_dca_plan p ON p.id = o.plan_id
            WHERE o.status = 'filled'
              AND COALESCE(o.trade_date, o.due_date) <= ?
            ORDER BY COALESCE(o.trade_date, o.due_date)""",
@@ -578,9 +587,17 @@ def summary(conn, period='day', as_of=None):
         if row['tx_amount'] is not None:
             currency = (row['tx_currency'] or 'CNY').upper()
             native = float(row['tx_amount'] or 0) + float(row['tx_fee'] or 0)
+            actual_account_id = row['tx_account_id']
         else:
             currency = (row['order_currency'] or 'CNY').upper()
             native = float(row['order_amount'] or 0)
+            actual_account_id = row['plan_account_id']
+        if account_id != 'all':
+            if account_id == 'none':
+                if actual_account_id is not None:
+                    continue
+            elif actual_account_id != account_id:
+                continue
         rate = float(row['tx_fx'] or 0) if row['tx_fx'] is not None else 0.0
         if rate <= 0:
             rate = _summary_fx(conn, currency, paid_date, actual_missing)
@@ -602,6 +619,7 @@ def summary(conn, period='day', as_of=None):
     return {
         'as_of': iso(as_of),
         'period': period,
+        'account_id': account_id,
         'plan': {
             'cny': round(plan_cny, 2),
             'by_currency': {k: round(v, 2) for k, v in sorted(plan_by_currency.items())},

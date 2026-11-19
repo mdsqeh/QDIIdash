@@ -556,6 +556,13 @@ td.num { white-space: nowrap; }
 .alert code { color: inherit; }
 
 /* ── dca summary ─────────────────────────────────── */
+.dca-summary-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.dca-summary-controls .mini-select { max-width: 180px; }
 .dca-summary-metrics {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -679,6 +686,8 @@ td.num { white-space: nowrap; }
     .metric-main strong { font-size: 1.4rem; }
     .metric small { display: none; }
     .report-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+    .dca-summary-controls { width: 100%; }
+    .dca-summary-controls .mini-select { flex: 1; max-width: none; }
     .dca-summary-metrics { gap: 8px; }
     .dca-summary-chart { height: 240px; }
     .plan-grid { grid-template-columns: 1fr; }

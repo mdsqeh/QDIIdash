@@ -438,6 +438,41 @@ class DcaTests(WealthTestBase):
         self.assertTrue(result['plan']['fx_missing'])
         self.assertIn('USD', result['plan']['missing_currencies'])
 
+    def test_summary_filters_by_account(self):
+        asset_id = self.add_asset()
+        self.add_price(asset_id, '2026-01-05', 10)
+        account_a = self.add_account('账户A')
+        account_b = self.add_account('账户B')
+        self.add_plan(asset_id, amount=1000, frequency='monthly',
+                      start_date='2026-01-01', day_of_month=5, account_id=account_a)
+        self.add_plan(asset_id, amount=2000, frequency='monthly',
+                      start_date='2026-01-01', day_of_month=5, account_id=account_b)
+        self.add_plan(asset_id, amount=500, frequency='monthly',
+                      start_date='2026-01-01', day_of_month=5)
+        dca.generate_orders(self.conn, today='2026-01-05')
+        dca.settle_orders(self.conn, today='2026-01-05')
+
+        all_accounts = dca.summary(self.conn, 'month', as_of='2026-01-05')
+        self.assertAlmostEqual(all_accounts['plan']['cny'], 3500.0)
+        self.assertAlmostEqual(all_accounts['actual']['cny'], 3500.0)
+
+        account_a_summary = dca.summary(
+            self.conn, 'month', as_of='2026-01-05', account_id=account_a)
+        self.assertEqual(account_a_summary['account_id'], account_a)
+        self.assertAlmostEqual(account_a_summary['plan']['cny'], 1000.0)
+        self.assertAlmostEqual(account_a_summary['actual']['cny'], 1000.0)
+        self.assertAlmostEqual(account_a_summary['series'][-1]['actual_cny'], 1000.0)
+
+        account_b_summary = dca.summary(
+            self.conn, 'month', as_of='2026-01-05', account_id=account_b)
+        self.assertAlmostEqual(account_b_summary['plan']['cny'], 2000.0)
+        self.assertAlmostEqual(account_b_summary['actual']['cny'], 2000.0)
+
+        unassigned = dca.summary(
+            self.conn, 'month', as_of='2026-01-05', account_id='none')
+        self.assertAlmostEqual(unassigned['plan']['cny'], 500.0)
+        self.assertAlmostEqual(unassigned['actual']['cny'], 500.0)
+
     def test_dca_buy_reduces_account_cash(self):
         from wealth.routes import _upsert_account_cash
         asset_id = self.add_asset()

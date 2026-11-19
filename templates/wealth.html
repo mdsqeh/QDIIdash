@@ -132,11 +132,16 @@
         <div class="card dca-summary">
             <div class="card-head">
                 <h2>定投汇总</h2>
-                <div class="range-btns" id="dcaPeriodBtns">
-                    <button type="button" data-period="day" class="active">日</button>
-                    <button type="button" data-period="week">周</button>
-                    <button type="button" data-period="month">月</button>
-                    <button type="button" data-period="year">年</button>
+                <div class="dca-summary-controls">
+                    <select id="dcaAccountFilter" class="mini-select" aria-label="选择定投账户">
+                        <option value="all">全部账户</option>
+                    </select>
+                    <div class="range-btns" id="dcaPeriodBtns">
+                        <button type="button" data-period="day" class="active">日</button>
+                        <button type="button" data-period="week">周</button>
+                        <button type="button" data-period="month">月</button>
+                        <button type="button" data-period="year">年</button>
+                    </div>
                 </div>
             </div>
             <div class="dca-summary-metrics">

@@ -396,6 +396,48 @@ class DcaTests(WealthTestBase):
         self.assertAlmostEqual(stats['value'], 1100.0)
         self.assertAlmostEqual(stats['pnl'], 100.0)
 
+    def test_summary_plan_run_rate_and_actual(self):
+        asset_id = self.add_asset()
+        self.add_price(asset_id, '2026-01-05', 10)
+        self.add_plan(asset_id, amount=100, frequency='daily',
+                      start_date='2026-01-05')
+        self.add_plan(asset_id, amount=2000, frequency='monthly',
+                      start_date='2026-01-01', day_of_month=5)
+        self.add_plan(asset_id, amount=500, frequency='monthly',
+                      start_date='2026-01-01', day_of_month=5, status='paused')
+        dca.generate_orders(self.conn, today='2026-01-05')
+        dca.settle_orders(self.conn, today='2026-01-05')
+
+        day = dca.summary(self.conn, 'day', as_of='2026-01-05')
+        self.assertAlmostEqual(day['plan']['cny'], 100 + 2000 * 12 / 252, places=2)
+        self.assertAlmostEqual(day['actual']['cny'], 2100.0)
+        self.assertAlmostEqual(day['series'][-1]['actual_cny'], 2100.0)
+        self.assertAlmostEqual(day['plan']['by_currency']['CNY'],
+                               100 + 2000 * 12 / 252, places=2)
+
+        month = dca.summary(self.conn, 'month', as_of='2026-01-05')
+        self.assertAlmostEqual(month['plan']['cny'], 100 * 252 / 12 + 2000, places=2)
+        self.assertAlmostEqual(month['actual']['cny'], 2100.0)
+
+    def test_summary_uses_fx_and_flags_missing(self):
+        asset_id = self.add_asset()
+        self.add_plan(asset_id, amount=100, amount_currency='USD',
+                      frequency='monthly', start_date='2026-01-01')
+        self.conn.execute(
+            "INSERT INTO wm_fx_rate(rate_date, currency, cny_rate, source) "
+            "VALUES ('2026-01-05', 'USD', 7.2, 'test')")
+        self.conn.commit()
+        result = dca.summary(self.conn, 'month', as_of='2026-01-05')
+        self.assertAlmostEqual(result['plan']['cny'], 720.0)
+        self.assertAlmostEqual(result['plan']['by_currency']['USD'], 100.0)
+        self.assertFalse(result['plan']['fx_missing'])
+
+        self.conn.execute('DELETE FROM wm_fx_rate')
+        self.conn.commit()
+        result = dca.summary(self.conn, 'month', as_of='2026-01-05')
+        self.assertTrue(result['plan']['fx_missing'])
+        self.assertIn('USD', result['plan']['missing_currencies'])
+
     def test_dca_buy_reduces_account_cash(self):
         from wealth.routes import _upsert_account_cash
         asset_id = self.add_asset()

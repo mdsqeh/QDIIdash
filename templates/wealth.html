@@ -129,6 +129,32 @@
             <button class="btn btn-primary" id="addPlanBtn" type="button">+ 新建定投</button>
             <span class="muted">到期自动按净值/收盘价入账，无需确认。</span>
         </div>
+        <div class="card dca-summary">
+            <div class="card-head">
+                <h2>定投汇总</h2>
+                <div class="range-btns" id="dcaPeriodBtns">
+                    <button type="button" data-period="day" class="active">日</button>
+                    <button type="button" data-period="week">周</button>
+                    <button type="button" data-period="month">月</button>
+                    <button type="button" data-period="year">年</button>
+                </div>
+            </div>
+            <div class="dca-summary-metrics">
+                <div class="metric">
+                    <span class="metric-label">计划定投 / <span id="dcaPlanPeriod">日</span></span>
+                    <strong id="dcaPlanTotal">-</strong>
+                    <small id="dcaPlanSub">当前运行中计划折算</small>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">实际已投 / <span id="dcaActualPeriod">今日</span></span>
+                    <strong id="dcaActualTotal">-</strong>
+                    <small id="dcaActualSub">本周期已成交</small>
+                </div>
+            </div>
+            <div class="dca-currency-breakdown" id="dcaCurrencyBreakdown"></div>
+            <div class="chart dca-summary-chart" id="dcaSummaryChart"></div>
+            <div class="dca-summary-note">计划按当前运行中计划折算（日按约 252 个交易日）；实际按已成交定投订单统计，均折合 CNY。</div>
+        </div>
         <div id="planList" class="plan-grid"></div>
         <div class="card">
             <div class="card-head">

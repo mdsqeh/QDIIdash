@@ -35,6 +35,8 @@ const state = {
     txMeta: { total: 0, page: 1, per_page: 100 },
     history: { points: [] },
     status: null,
+    dcaSummary: null,
+    dcaPeriod: 'day',
     range: '1y',
     tab: 'overview',
     txPage: 1,
@@ -179,7 +181,7 @@ async function boot() {
 
 async function refreshAll() {
     try {
-        const [summary, positions, assets, accounts, plans, orders, status] = await Promise.all([
+        const [summary, positions, assets, accounts, plans, orders, status, dcaSummary] = await Promise.all([
             api('/api/wm/summary?range=' + encodeURIComponent(state.range)),
             api('/api/wm/positions'),
             api('/api/wm/assets'),
@@ -187,6 +189,7 @@ async function refreshAll() {
             api('/api/wm/dca/plans'),
             api('/api/wm/dca/orders' + (state.orderFilter ? '?status=' + encodeURIComponent(state.orderFilter) : '')),
             api('/api/wm/status'),
+            api('/api/wm/dca/summary?period=' + encodeURIComponent(state.dcaPeriod)),
         ]);
         state.summary = summary;
         state.positions = positions.positions || [];
@@ -196,7 +199,9 @@ async function refreshAll() {
         state.orders = orders.orders || [];
         state.orderTotal = orders.total || 0;
         state.status = status;
+        state.dcaSummary = dcaSummary;
         renderAll();
+        if (state.tab === 'dca') renderDcaSummary();
         await loadHistory();
     } catch (err) {
         toast(err.message, 'error');
@@ -220,6 +225,15 @@ async function loadOrders() {
         state.orders = data.orders || [];
         state.orderTotal = data.total || 0;
         renderOrders();
+    } catch (err) {
+        toast(err.message, 'error');
+    }
+}
+
+async function loadDcaSummary() {
+    try {
+        state.dcaSummary = await api('/api/wm/dca/summary?period=' + encodeURIComponent(state.dcaPeriod));
+        renderDcaSummary();
     } catch (err) {
         toast(err.message, 'error');
     }
@@ -791,6 +805,117 @@ function renderMonthly() {
     }, true);
 }
 
+const DCA_PERIOD_LABELS = { day: '日', week: '周', month: '月', year: '年' };
+const DCA_PERIOD_SCOPES = { day: '今日', week: '本周', month: '本月', year: '今年' };
+
+function renderDcaSummary() {
+    const data = state.dcaSummary;
+    if (!data) return;
+    const period = data.period || state.dcaPeriod;
+    const label = DCA_PERIOD_LABELS[period] || '日';
+    const scope = DCA_PERIOD_SCOPES[period] || '本周期';
+    const plan = Number(data.plan?.cny) || 0;
+    const actual = Number(data.actual?.cny) || 0;
+    $('#dcaPlanPeriod').textContent = label;
+    $('#dcaActualPeriod').textContent = scope;
+    $('#dcaPlanTotal').textContent = fmtMoney(plan);
+    $('#dcaActualTotal').textContent = fmtMoney(actual);
+    $('#dcaPlanSub').textContent = `当前运行中计划折算 / ${label}`;
+    $('#dcaActualSub').textContent = `${scope}已成交`;
+    renderDcaCurrencyBreakdown(data);
+
+    const chart = getChart('dcaSummaryChart');
+    if (!chart) return;
+    const series = data.series || [];
+    const actualValues = series.map(s => Number(s.actual_cny) || 0);
+    const planValues = series.map(s => Number(s.plan_cny) || 0);
+    const hasData = series.length && (actualValues.some(v => v > 0) || planValues.some(v => v > 0));
+    if (!hasData) {
+        chart.setOption({
+            title: {
+                text: '暂无定投计划或成交', left: 'center', top: 'middle',
+                textStyle: { color: '#65758a', fontSize: 12, fontWeight: 'normal' },
+            },
+            xAxis: { show: false }, yAxis: { show: false }, series: [],
+        }, true);
+        return;
+    }
+    chart.setOption({
+        tooltip: {
+            trigger: 'axis', backgroundColor: '#16212d', borderColor: '#223041',
+            textStyle: { color: '#e8eef5', fontSize: 12 },
+            formatter: params => {
+                const axis = params[0]?.axisValue || '';
+                return `${axis}<br>` + params.map(p =>
+                    `${p.marker}${p.seriesName}: <b>${fmtMoney(p.value)}</b>`).join('<br>');
+            },
+        },
+        legend: {
+            top: 0, right: 0, textStyle: { color: '#93a2b4', fontSize: 11 },
+            itemWidth: 12, itemHeight: 8,
+        },
+        grid: { left: 52, right: 16, top: 34, bottom: 30 },
+        xAxis: {
+            type: 'category', data: series.map(s => s.label),
+            axisLine: { lineStyle: { color: '#223041' } },
+            axisLabel: { color: '#65758a', fontSize: 10, hideOverlap: true },
+            axisTick: { show: false },
+        },
+        yAxis: {
+            type: 'value',
+            splitLine: { lineStyle: { color: '#1a2634' } },
+            axisLabel: { color: '#65758a', fontSize: 10, formatter: v => fmtCompact(v) },
+        },
+        series: [
+            {
+                name: '实际已投', type: 'bar', data: actualValues, barMaxWidth: 22,
+                itemStyle: { color: '#60a5fa', borderRadius: [3, 3, 0, 0] },
+                emphasis: { focus: 'series' },
+            },
+            {
+                name: '计划折算', type: 'line', data: planValues, showSymbol: false,
+                lineStyle: { width: 1.5, type: 'dashed', color: '#f59e0b' },
+                itemStyle: { color: '#f59e0b' },
+                emphasis: { focus: 'series' },
+            },
+        ],
+    }, true);
+}
+
+function renderDcaCurrencyBreakdown(data) {
+    const el = $('#dcaCurrencyBreakdown');
+    if (!el) return;
+    const plan = data.plan?.by_currency || {};
+    const actual = data.actual?.by_currency || {};
+    const planKeys = Object.keys(plan);
+    const actualKeys = Object.keys(actual);
+    const show = planKeys.some(c => c !== 'CNY') || actualKeys.some(c => c !== 'CNY')
+        || planKeys.length > 1 || actualKeys.length > 1;
+    if (!show) {
+        el.innerHTML = '';
+        return;
+    }
+    const chips = obj => Object.entries(obj)
+        .map(([currency, value]) =>
+            `<span class="dca-currency-chip">${esc(currency)} ${fmtCcy(value, currency)}</span>`)
+        .join('');
+    const lines = [];
+    if (planKeys.length) {
+        lines.push(`<div class="dca-currency-line"><span class="muted">计划构成</span>${chips(plan)}</div>`);
+    }
+    if (actualKeys.length) {
+        lines.push(`<div class="dca-currency-line"><span class="muted">实际构成</span>${chips(actual)}</div>`);
+    }
+    if (data.plan?.fx_missing || data.actual?.fx_missing) {
+        const missing = [...new Set([
+            ...(data.plan?.missing_currencies || []),
+            ...(data.actual?.missing_currencies || []),
+        ])];
+        lines.push(`<div class="dca-currency-warn">缺少汇率：${missing.map(esc).join('、')}，已按 1:1 估算</div>`);
+    }
+    el.innerHTML = lines.join('');
+}
+
 function resizeCharts() {
     Object.values(state.charts).forEach(chart => { try { chart.resize(); } catch (_) {} });
 }
@@ -810,6 +935,8 @@ function switchTab(tab) {
         setTimeout(resizeCharts, 50);
     } else if (tab === 'dca') {
         loadOrders();
+        loadDcaSummary();
+        setTimeout(resizeCharts, 50);
     } else if (tab === 'transactions') {
         loadTransactions(state.txPage);
     }
@@ -851,6 +978,13 @@ function bindEvents() {
     $('#orderStatusFilter')?.addEventListener('change', event => {
         state.orderFilter = event.target.value;
         loadOrders();
+    });
+    $('#dcaPeriodBtns')?.addEventListener('click', event => {
+        const btn = event.target.closest('button[data-period]');
+        if (!btn) return;
+        state.dcaPeriod = btn.dataset.period;
+        $$('#dcaPeriodBtns button').forEach(b => b.classList.toggle('active', b === btn));
+        loadDcaSummary();
     });
     $('#modalClose')?.addEventListener('click', closeModal);
     document.addEventListener('keydown', event => {

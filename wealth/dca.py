@@ -7,11 +7,13 @@ from datetime import date, timedelta
 from . import prices
 from .cash import apply_transaction_cash
 from .db import connect, iso, now_iso, today_str
-from .portfolio import parse_date, plan_position, xirr
+from .portfolio import fx_rate as portfolio_fx_rate, parse_date, plan_position, xirr
 
 LOCK = threading.Lock()
 MAX_BACKFILL_PER_RUN = 500
 PRICE_WAIT_DAYS = 14
+SUMMARY_PERIODS = {'day': 252, 'week': 52, 'month': 12, 'year': 1}
+PLAN_PER_YEAR = {'daily': 252, 'weekly': 52, 'biweekly': 26, 'monthly': 12}
 
 
 def _month_days(year, month):
@@ -487,6 +489,132 @@ def plan_stats(conn, plan, as_of=None):
         'xirr': xirr(flows),
         'next_due': iso(upcoming) if upcoming else None,
         'last_generated_date': plan.get('last_generated_date'),
+    }
+
+
+def _shift_month(day, months):
+    index = day.year * 12 + day.month - 1 + months
+    return date(index // 12, index % 12 + 1, 1)
+
+
+def _summary_buckets(period, as_of):
+    if period == 'day':
+        starts = [as_of - timedelta(days=13 - i) for i in range(14)]
+        return [(d, d, d.strftime('%m-%d')) for d in starts]
+    if period == 'week':
+        current = as_of - timedelta(days=as_of.weekday())
+        starts = [current - timedelta(weeks=11 - i) for i in range(12)]
+        return [(d, d + timedelta(days=6), d.strftime('%m-%d')) for d in starts]
+    if period == 'month':
+        current = date(as_of.year, as_of.month, 1)
+        starts = [_shift_month(current, i - 11) for i in range(12)]
+        return [(d, _shift_month(d, 1) - timedelta(days=1), d.strftime('%Y-%m'))
+                for d in starts]
+    starts = [date(as_of.year - 4 + i, 1, 1) for i in range(5)]
+    return [(d, date(d.year, 12, 31), str(d.year)) for d in starts]
+
+
+def _summary_fx(conn, currency, on_date, missing):
+    currency = (currency or 'CNY').upper()
+    if currency == 'CNY':
+        return 1.0
+    rate = portfolio_fx_rate(conn, currency, on_date)
+    if rate is None:
+        missing.add(currency)
+        return 1.0
+    return float(rate)
+
+
+def summary(conn, period='day', as_of=None):
+    """Current DCA commitment and actual filled amount by day/week/month/year."""
+    period = period if period in SUMMARY_PERIODS else 'day'
+    as_of = parse_date(as_of or today_str())
+    plan_missing = set()
+    actual_missing = set()
+    plan_by_currency = {}
+    plan_cny = 0.0
+
+    plans = conn.execute(
+        """SELECT amount, amount_currency, frequency, start_date, end_date
+           FROM wm_dca_plan WHERE status = 'active'"""
+    ).fetchall()
+    for plan in plans:
+        start = parse_date(plan['start_date'])
+        end = parse_date(plan['end_date']) if plan['end_date'] else None
+        if start > as_of or (end and end < as_of):
+            continue
+        frequency = plan['frequency']
+        if frequency not in PLAN_PER_YEAR:
+            continue
+        amount = float(plan['amount'] or 0)
+        if amount <= 0:
+            continue
+        currency = (plan['amount_currency'] or 'CNY').upper()
+        native = amount * PLAN_PER_YEAR[frequency] / SUMMARY_PERIODS[period]
+        rate = _summary_fx(conn, currency, as_of, plan_missing)
+        plan_by_currency[currency] = plan_by_currency.get(currency, 0.0) + native
+        plan_cny += native * rate
+
+    buckets = _summary_buckets(period, as_of)
+    current_start = next(
+        (start for start, end, _ in buckets if start <= as_of <= end),
+        buckets[-1][0])
+    actual_by_bucket = {start: 0.0 for start, _, _ in buckets}
+    actual_by_currency = {}
+    rows = conn.execute(
+        """SELECT o.trade_date, o.due_date, o.amount AS order_amount,
+                  o.amount_currency AS order_currency,
+                  t.amount AS tx_amount, t.fee AS tx_fee,
+                  t.currency AS tx_currency, t.fx_rate AS tx_fx
+           FROM wm_dca_order o
+           LEFT JOIN wm_transaction t ON t.dca_order_id = o.id
+           WHERE o.status = 'filled'
+             AND COALESCE(o.trade_date, o.due_date) <= ?
+           ORDER BY COALESCE(o.trade_date, o.due_date)""",
+        (iso(as_of),),
+    ).fetchall()
+    for row in rows:
+        paid_date = parse_date(row['trade_date'] or row['due_date'])
+        if row['tx_amount'] is not None:
+            currency = (row['tx_currency'] or 'CNY').upper()
+            native = float(row['tx_amount'] or 0) + float(row['tx_fee'] or 0)
+        else:
+            currency = (row['order_currency'] or 'CNY').upper()
+            native = float(row['order_amount'] or 0)
+        rate = float(row['tx_fx'] or 0) if row['tx_fx'] is not None else 0.0
+        if rate <= 0:
+            rate = _summary_fx(conn, currency, paid_date, actual_missing)
+        for bucket_start, bucket_end, _ in buckets:
+            if bucket_start <= paid_date <= bucket_end:
+                actual_by_bucket[bucket_start] += native * rate
+                if bucket_start == current_start:
+                    actual_by_currency[currency] = (
+                        actual_by_currency.get(currency, 0.0) + native)
+                break
+
+    series = [{
+        'label': label,
+        'start': iso(start),
+        'end': iso(end),
+        'plan_cny': round(plan_cny, 2),
+        'actual_cny': round(actual_by_bucket[start], 2),
+    } for start, end, label in buckets]
+    return {
+        'as_of': iso(as_of),
+        'period': period,
+        'plan': {
+            'cny': round(plan_cny, 2),
+            'by_currency': {k: round(v, 2) for k, v in sorted(plan_by_currency.items())},
+            'fx_missing': bool(plan_missing),
+            'missing_currencies': sorted(plan_missing),
+        },
+        'actual': {
+            'cny': round(actual_by_bucket[current_start], 2),
+            'by_currency': {k: round(v, 2) for k, v in sorted(actual_by_currency.items())},
+            'fx_missing': bool(actual_missing),
+            'missing_currencies': sorted(actual_missing),
+        },
+        'series': series,
     }
 
 

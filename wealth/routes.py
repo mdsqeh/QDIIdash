@@ -1456,6 +1456,15 @@ def api_dca_preview():
         return _error(str(exc))
 
 
+@wealth_bp.route('/api/wm/dca/summary')
+def api_dca_summary():
+    period = request.args.get('period') or 'day'
+    if period not in ('day', 'week', 'month', 'year'):
+        period = 'day'
+    as_of = parse_date(request.args.get('as_of') or today_str())
+    return jsonify(dca.summary(get_db(), period, as_of=as_of))
+
+
 @wealth_bp.route('/api/wm/dca/orders')
 def api_dca_orders():
     conn = get_db()

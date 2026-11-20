@@ -366,6 +366,60 @@ class MathsTests(WealthTestBase):
 
 
 class DcaTests(WealthTestBase):
+    def _add_order(self, plan_id, due_date, trade_date, amount=1000,
+                   status='awaiting_price'):
+        cur = self.conn.execute(
+            """INSERT INTO wm_dca_order
+               (plan_id, due_date, trade_date, amount, amount_currency, status, created_at)
+               VALUES (?, ?, ?, ?, 'CNY', ?, ?)""",
+            (plan_id, due_date, trade_date, amount, status, now_iso()),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def test_pending_amount_sync_scope(self):
+        asset_id = self.add_asset(symbol='000001', market='FUND_CN', asset_class='fund')
+        plan_id = self.add_plan(asset_id, amount=1000, start_date='2026-01-01')
+        current = self._add_order(plan_id, '2026-01-05', '2026-01-05')
+        future = self._add_order(plan_id, '2026-01-06', '2026-01-06')
+        past = self._add_order(plan_id, '2026-01-02', '2026-01-02')
+        filled = self._add_order(plan_id, '2026-01-07', '2026-01-05', status='filled')
+        failed = self._add_order(plan_id, '2026-01-08', '2026-01-05', status='failed')
+
+        now = datetime(2026, 1, 5, 10, 0, tzinfo=SHANGHAI_TZ)
+        eligible = dca.pending_orders_for_amount_change(self.conn, plan_id, now=now)
+        self.assertEqual({order['id'] for order in eligible}, {current, future})
+        self.assertEqual(dca.update_pending_order_amounts(
+            self.conn, plan_id, 500, 'CNY', now=now), 2)
+        self.conn.commit()
+
+        amounts = {row['id']: row['amount'] for row in self.conn.execute(
+            'SELECT id, amount FROM wm_dca_order').fetchall()}
+        self.assertEqual(amounts[current], 500)
+        self.assertEqual(amounts[future], 500)
+        self.assertEqual(amounts[past], 1000)
+        self.assertEqual(amounts[filled], 1000)
+        self.assertEqual(amounts[failed], 1000)
+
+    def test_pending_amount_sync_respects_fund_cutoff(self):
+        asset_id = self.add_asset(symbol='000001', market='FUND_CN', asset_class='fund')
+        plan_id = self.add_plan(asset_id, amount=1000, start_date='2026-01-01')
+        order_id = self._add_order(plan_id, '2026-01-05', '2026-01-05')
+
+        before = datetime(2026, 1, 5, 14, 59, tzinfo=SHANGHAI_TZ)
+        after = datetime(2026, 1, 5, 15, 0, tzinfo=SHANGHAI_TZ)
+        self.assertEqual(len(dca.pending_orders_for_amount_change(
+            self.conn, plan_id, now=before)), 1)
+        self.assertEqual(dca.pending_orders_for_amount_change(
+            self.conn, plan_id, now=after), [])
+        self.assertEqual(dca.update_pending_order_amounts(
+            self.conn, plan_id, 500, 'CNY', now=after), 0)
+        self.conn.commit()
+        order = self.conn.execute(
+            'SELECT amount FROM wm_dca_order WHERE id = ?', (order_id,)
+        ).fetchone()
+        self.assertEqual(order['amount'], 1000)
+
     def test_generation_is_idempotent_and_settles(self):
         asset_id = self.add_asset()
         self.add_price(asset_id, '2026-01-02', 10)
@@ -1116,6 +1170,101 @@ class RoutesApiTests(unittest.TestCase):
         account = next(a for a in self.client.get('/api/wm/accounts').get_json()
                        if a['id'] == account_id)
         self.assertAlmostEqual(account['cash_balances'][0]['amount'], 8990.0)
+
+    def test_dca_plan_amount_change_can_sync_pending_order(self):
+        asset_id = self._create_asset()
+        today = today_str()
+        response = self.client.post('/api/wm/dca/plans', json={
+            'asset_id': asset_id, 'amount': 1000, 'amount_currency': 'CNY',
+            'frequency': 'monthly', 'day_of_month': int(today[8:10]),
+            'start_date': today, 'catch_up': True,
+        })
+        self.assertEqual(response.status_code, 201, response.get_json())
+        plan_id = response.get_json()['id']
+
+        conn = connect(self.db_path)
+        try:
+            order = conn.execute(
+                'SELECT amount, status FROM wm_dca_order WHERE plan_id = ?',
+                (plan_id,),
+            ).fetchone()
+            self.assertEqual(order['status'], 'awaiting_price')
+            self.assertAlmostEqual(order['amount'], 1000.0)
+        finally:
+            conn.close()
+
+        response = self.client.put(f'/api/wm/dca/plans/{plan_id}', json={'amount': 500})
+        self.assertEqual(response.status_code, 409, response.get_json())
+        self.assertTrue(response.get_json()['pending_action_required'])
+        self.assertEqual(response.get_json()['pending_count'], 1)
+
+        conn = connect(self.db_path)
+        try:
+            self.assertAlmostEqual(conn.execute(
+                'SELECT amount FROM wm_dca_plan WHERE id = ?', (plan_id,)
+            ).fetchone()['amount'], 1000.0)
+            self.assertAlmostEqual(conn.execute(
+                'SELECT amount FROM wm_dca_order WHERE plan_id = ?', (plan_id,)
+            ).fetchone()['amount'], 1000.0)
+        finally:
+            conn.close()
+
+        response = self.client.put(f'/api/wm/dca/plans/{plan_id}', json={
+            'amount': 500, 'pending_action': 'future',
+        })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json()['pending_orders_updated'], 0)
+
+        conn = connect(self.db_path)
+        try:
+            self.assertAlmostEqual(conn.execute(
+                'SELECT amount FROM wm_dca_plan WHERE id = ?', (plan_id,)
+            ).fetchone()['amount'], 500.0)
+            self.assertAlmostEqual(conn.execute(
+                'SELECT amount FROM wm_dca_order WHERE plan_id = ?', (plan_id,)
+            ).fetchone()['amount'], 1000.0)
+        finally:
+            conn.close()
+
+        response = self.client.put(f'/api/wm/dca/plans/{plan_id}', json={'amount': 700})
+        self.assertEqual(response.status_code, 409, response.get_json())
+        response = self.client.put(f'/api/wm/dca/plans/{plan_id}', json={
+            'amount': 700, 'pending_action': 'update',
+        })
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json()['pending_orders_updated'], 1)
+
+        conn = connect(self.db_path)
+        try:
+            self.assertAlmostEqual(conn.execute(
+                'SELECT amount FROM wm_dca_plan WHERE id = ?', (plan_id,)
+            ).fetchone()['amount'], 700.0)
+            order = conn.execute(
+                'SELECT id, amount FROM wm_dca_order WHERE plan_id = ?', (plan_id,)
+            ).fetchone()
+            self.assertAlmostEqual(order['amount'], 700.0)
+            conn.execute(
+                "UPDATE wm_dca_order SET status = 'failed', amount = 1000 WHERE id = ?",
+                (order['id'],),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        response = self.client.post(
+            f"/api/wm/dca/orders/{order['id']}/retry",
+            json={'use_plan_amount': True},
+        )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        conn = connect(self.db_path)
+        try:
+            retried = conn.execute(
+                'SELECT amount, status FROM wm_dca_order WHERE id = ?', (order['id'],)
+            ).fetchone()
+            self.assertEqual(retried['status'], 'awaiting_price')
+            self.assertAlmostEqual(retried['amount'], 700.0)
+        finally:
+            conn.close()
 
 
 if __name__ == '__main__':

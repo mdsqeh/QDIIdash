@@ -91,6 +91,7 @@ Flask + SQLite 后端、纯前端展示的 QDII 基金数据看板。自动采�
 - `weekly` / `biweekly` / `monthly`：按 `roll_rule` 处理非交易日（顺延 / 提前 / 跳过）。
 - 订单状态：`awaiting_price`（等净值/收盘价）→ `filled`；异常时 `failed`，手动跳过为 `skipped`。
 - 创建历史开始的计划时会先预览补记期数，确认后才生成；单次最多补记 500 期，剩余在下次任务继续。
+- 修改计划金额时，如果存在当前待成交订单，会先询问「仅影响未来订单」或「同时更新当前待成交订单」；仅同步未来订单，以及 A 股/场外基金未过 15:00 的当日订单，已成交、已过交易日、历史补记订单不会修改。失败/跳过的订单不自动改金额，可在执行记录中选「按新金额重试」。
 - 场外基金费用：`fee = 金额 - 金额 / (1 + 费率)`，份额 `= (金额 - fee) / 净值`；股票/ETF 按佣金率和最低佣金计算，A 股按 100 股整手取整。
 - 定时任务按**交易日收盘/净值**结算；「立即执行」允许使用当前可见的最新价格。
 - 定投汇总中的「计划」按当前运行中计划折算到所选周期（日按约 252 个交易日），「实际」为所选周期内已成交订单；两者均折合人民币展示，非人民币计划/资产会按已存汇率换算，缺汇率时提示。
@@ -151,11 +152,11 @@ Flask + SQLite 后端、纯前端展示的 QDII 基金数据看板。自动采�
 | GET/POST | `/api/wm/accounts` | 账户列表（含各币种现金）/ 新建（可带 `cash_balances: [{currency, amount, balance_date}]`，兼容 `cash_amount`、`cash_date`） |
 | PUT/DELETE | `/api/wm/accounts/<id>` | 修改（可多币种改现金）/ 删除未使用账户 |
 | GET/POST | `/api/wm/dca/plans` | 定投计划 |
-| PUT/DELETE | `/api/wm/dca/plans/<id>` | 修改 / 归档 |
+| PUT/DELETE | `/api/wm/dca/plans/<id>` | 修改 / 归档；金额变更且存在待成交订单时需传 `pending_action=update\|future` |
 | POST | `/api/wm/dca/plans/<id>/pause\|resume\|run-now` | 暂停 / 恢复 / 立即执行 |
 | GET | `/api/wm/dca/orders` | 执行记录 |
 | GET | `/api/wm/dca/summary?period=day\|week\|month\|year&account_id=<id>` | 计划与实际定投汇总、图表数据；省略 `account_id` 为全部账户，`none` 为未分配账户 |
-| POST | `/api/wm/dca/orders/<id>/skip\|retry` | 跳过 / 重试 |
+| POST | `/api/wm/dca/orders/<id>/skip\|retry` | 跳过 / 重试；retry 可传 `use_plan_amount=true` 按当前计划金额重试 |
 | POST | `/api/wm/dca/preview` | 预览期数与补记数量 |
 | POST | `/api/wm/dca/run` | 手动触发生成+结算 |
 | POST | `/api/wm/sync` | 同步全部行情 |
@@ -755,6 +756,7 @@ Docker 部署改 compose 的 `ports` 左侧端口（如 `"8080:5000"`）；本�
 
 - **主页数据持久化**：自选/自评级改存 SQLite（`fund_watchlist` / `fund_ratings`），首次打开自动迁移浏览器旧数据，导出/导入同步调整
 - **主页持仓接入财富管理**：自动读取财富管理实际持有的场内/场外基金，且仅统计 QDII 基金池内代码；持仓标记改为只读
+- **定投金额修改同步待成交订单**：修改计划金额时可选仅影响未来订单或同步当前待成交订单；场外基金 15:00 后、已成交及历史订单保持不变
 
 ### 2026-11-17
 

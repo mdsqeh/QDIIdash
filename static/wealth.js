@@ -528,7 +528,15 @@ function renderOrders() {
     body.innerHTML = state.orders.map(o => {
         const actions = [];
         if (o.status === 'awaiting_price' || o.status === 'failed') actions.push(`<button class="btn btn-ghost btn-sm" data-action="skip-order" data-order="${o.id}">跳过</button>`);
-        if (o.status === 'failed' || o.status === 'skipped') actions.push(`<button class="btn btn-ghost btn-sm" data-action="retry-order" data-order="${o.id}">重试</button>`);
+        if (o.status === 'failed' || o.status === 'skipped') {
+            actions.push(`<button class="btn btn-ghost btn-sm" data-action="retry-order" data-order="${o.id}">重试</button>`);
+            const plan = state.plans.find(p => String(p.id) === String(o.plan_id));
+            const amountDiffers = plan && (
+                Number(plan.amount) !== Number(o.amount)
+                || String(plan.amount_currency || 'CNY').toUpperCase() !== String(o.amount_currency || 'CNY').toUpperCase()
+            );
+            if (amountDiffers) actions.push(`<button class="btn btn-ghost btn-sm" data-action="retry-order-plan" data-order="${o.id}">按新金额重试</button>`);
+        }
         return `<tr>
             <td>${esc(o.due_date)}</td>
             <td>${esc(o.trade_date || o.price_date || '—')}</td>
@@ -1129,6 +1137,12 @@ async function handleAction(el) {
         } else if (action === 'retry-order') {
             await api(`/api/wm/dca/orders/${el.dataset.order}/retry`, { method: 'POST' });
             toast('已重试', 'success');
+            await refreshAll();
+        } else if (action === 'retry-order-plan') {
+            await api(`/api/wm/dca/orders/${el.dataset.order}/retry`, {
+                method: 'POST', body: { use_plan_amount: true },
+            });
+            toast('已按当前计划金额重试', 'success');
             await refreshAll();
         } else if (action === 'run-dca') {
             el.disabled = true;
@@ -1904,8 +1918,30 @@ function openPlanModal(plan = null) {
         if (submitBtn) submitBtn.disabled = true;
         try {
             if (editing) {
-                await api('/api/wm/dca/plans/' + plan.id, { method: 'PUT', body: data });
-                toast('已保存，后续订单按新设置生成', 'success');
+                let result;
+                try {
+                    result = await api('/api/wm/dca/plans/' + plan.id, { method: 'PUT', body: data });
+                } catch (err) {
+                    if (err.status === 409 && err.data?.pending_action_required) {
+                        const count = err.data.pending_count || err.data.pending_orders?.length || 1;
+                        const updateCurrent = confirm(
+                            `当前有 ${count} 笔待成交订单可以同步为新金额。\n\n` +
+                            '确定：同时更新当前待成交订单\n' +
+                            '取消：仅影响未来订单\n\n' +
+                            '已成交、已过交易截止时间或历史订单不会修改。'
+                        );
+                        data.pending_action = updateCurrent ? 'update' : 'future';
+                        result = await api('/api/wm/dca/plans/' + plan.id, { method: 'PUT', body: data });
+                    } else {
+                        throw err;
+                    }
+                }
+                toast(
+                    result?.pending_orders_updated
+                        ? `已保存，${result.pending_orders_updated} 笔待成交订单已同步为新金额`
+                        : '已保存，后续订单按新设置生成',
+                    'success'
+                );
             } else {
                 await api('/api/wm/dca/plans', { method: 'POST', body: data });
                 toast('定投计划已创建', 'success');

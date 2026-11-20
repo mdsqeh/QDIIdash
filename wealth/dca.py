@@ -2,11 +2,11 @@
 import calendar
 import math
 import threading
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from . import prices
 from .cash import apply_transaction_cash
-from .db import connect, iso, now_iso, today_str
+from .db import SHANGHAI_TZ, connect, iso, now_iso, today_str
 from .portfolio import fx_rate as portfolio_fx_rate, parse_date, plan_position, xirr
 
 LOCK = threading.Lock()
@@ -70,6 +70,51 @@ def resolve_trade_date(conn, asset, due, roll_rule='next'):
             return due
         due += timedelta(days=direction)
     return due
+
+
+def pending_orders_for_amount_change(conn, plan_id, now=None):
+    """Orders whose amount can still be changed without rewriting history.
+
+    Only ``awaiting_price`` orders for today or later qualify. For CN/FUND_CN
+    today's order is excluded after the 15:00 cutoff.
+    """
+    now = now or datetime.now(SHANGHAI_TZ)
+    today = now.date()
+    rows = conn.execute(
+        """SELECT o.*, a.market AS asset_market
+           FROM wm_dca_order o
+           JOIN wm_dca_plan p ON p.id = o.plan_id
+           JOIN wm_asset a ON a.id = p.asset_id
+           WHERE o.plan_id = ? AND o.status = 'awaiting_price'
+           ORDER BY o.trade_date, o.id""",
+        (plan_id,),
+    ).fetchall()
+    result = []
+    for row in rows:
+        trade_date = parse_date(row['trade_date'] or row['due_date'])
+        if trade_date < today:
+            continue
+        if (trade_date == today and row['asset_market'] in ('CN', 'FUND_CN')
+                and now.hour >= 15):
+            continue
+        result.append(dict(row))
+    return result
+
+
+def update_pending_order_amounts(conn, plan_id, amount, amount_currency, now=None):
+    """Update only the orders returned by pending_orders_for_amount_change()."""
+    orders = pending_orders_for_amount_change(conn, plan_id, now=now)
+    if not orders:
+        return 0
+    placeholders = ', '.join('?' for _ in orders)
+    cur = conn.execute(
+        f"""UPDATE wm_dca_order
+            SET amount = ?, amount_currency = ?
+            WHERE status = 'awaiting_price' AND id IN ({placeholders})""",
+        (float(amount), (amount_currency or 'CNY').upper(),
+         *(order['id'] for order in orders)),
+    )
+    return cur.rowcount
 
 
 def generate_orders(conn, today=None, plan_id=None):
@@ -655,8 +700,16 @@ def skip_order(conn, order_id):
     )
 
 
-def retry_order(conn, order_id):
+def retry_order(conn, order_id, amount=None, amount_currency=None):
+    if amount is None:
+        conn.execute(
+            "UPDATE wm_dca_order SET status = 'awaiting_price', message = NULL, settled_at = NULL WHERE id = ? AND status IN ('failed', 'skipped')",
+            (order_id,),
+        )
+        return
     conn.execute(
-        "UPDATE wm_dca_order SET status = 'awaiting_price', message = NULL, settled_at = NULL WHERE id = ? AND status IN ('failed', 'skipped')",
-        (order_id,),
+        """UPDATE wm_dca_order SET status = 'awaiting_price', message = NULL,
+           settled_at = NULL, amount = ?, amount_currency = ?
+           WHERE id = ? AND status IN ('failed', 'skipped')""",
+        (float(amount), (amount_currency or 'CNY').upper(), order_id),
     )

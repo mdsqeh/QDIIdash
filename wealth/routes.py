@@ -1354,6 +1354,29 @@ def api_dca_plan(plan_id):
             return _error('已有执行记录，开始日期不能修改')
     try:
         merged, asset = _validate_plan(conn, data, existing=plan)
+        amount_changed = (
+            _num(merged.get('amount'), 0) != _num(plan.get('amount'), 0)
+            or (merged.get('amount_currency') or 'CNY').upper()
+            != (plan.get('amount_currency') or 'CNY').upper()
+        )
+        pending_action = str(data.get('pending_action') or '').strip().lower()
+        pending_orders = (
+            dca.pending_orders_for_amount_change(conn, plan_id)
+            if amount_changed else []
+        )
+        if pending_orders and pending_action not in ('update', 'future'):
+            return jsonify({
+                'error': '计划金额已修改，当前有待成交订单',
+                'pending_action_required': True,
+                'pending_count': len(pending_orders),
+                'pending_orders': [{
+                    'id': order['id'],
+                    'due_date': order['due_date'],
+                    'trade_date': order['trade_date'],
+                    'amount': order['amount'],
+                    'amount_currency': order['amount_currency'],
+                } for order in pending_orders],
+            }), 409
         schedule_changed = any(
             (merged.get(k) or None) != (plan.get(k) or None)
             for k in ('frequency', 'weekday', 'day_of_month', 'start_date', 'roll_rule', 'end_date')
@@ -1382,11 +1405,17 @@ def api_dca_plan(plan_id):
                 'UPDATE wm_dca_plan SET last_generated_date = ? WHERE id = ?',
                 (iso(parse_date(today_str()) - timedelta(days=1)), plan_id),
             )
+        updated_pending = 0
+        if amount_changed and pending_action == 'update':
+            updated_pending = dca.update_pending_order_amounts(
+                conn, plan_id, _num(merged['amount']), merged['amount_currency'])
         conn.commit()
         dca.generate_orders(conn, plan_id=plan_id)
         dca.settle_orders(conn)
         row = _plan_or_404(conn, plan_id)
-        return jsonify({**row, **dca.plan_stats(conn, row)})
+        result = {**row, **dca.plan_stats(conn, row)}
+        result['pending_orders_updated'] = updated_pending
+        return jsonify(result)
     except (ValueError, TypeError) as exc:
         conn.rollback()
         return _error(str(exc))
@@ -1516,7 +1545,16 @@ def api_dca_order_skip(order_id):
 @wealth_bp.route('/api/wm/dca/orders/<int:order_id>/retry', methods=['POST'])
 def api_dca_order_retry(order_id):
     conn = get_db()
-    dca.retry_order(conn, order_id)
+    amount = amount_currency = None
+    if _flag(_body().get('use_plan_amount')):
+        row = conn.execute(
+            """SELECT p.amount, p.amount_currency FROM wm_dca_order o
+               JOIN wm_dca_plan p ON p.id = o.plan_id WHERE o.id = ?""",
+            (order_id,),
+        ).fetchone()
+        if row:
+            amount, amount_currency = row['amount'], row['amount_currency']
+    dca.retry_order(conn, order_id, amount, amount_currency)
     conn.commit()
     dca.settle_orders(conn)
     conn.commit()

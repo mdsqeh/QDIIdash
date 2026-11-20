@@ -32,7 +32,8 @@ Flask + SQLite 后端、纯前端展示的 QDII 基金数据看板。自动采�
 
 - **QDII 基金列表**：代码、名称、类型、场内/场外标识、最新净值、累计净值、近 1/2/3/4/5/10 年涨跌幅、年化收益、总收益、管理费/托管费/销售费、申购状态、日累计限额、场内折溢价、日涨跌幅
 - 搜索、排序、筛选（成立以来每年正收益 / 年化 > X%）、分页
-- 自选 / 自评级（localStorage 持久化，支持导出、导入备份）
+- 自选 / 自评级（SQLite 持久化，支持导出、导入备份；首次打开自动迁移浏览器里的旧数据）
+- 持仓标记自动同步财富管理中的场内/场外基金，且只统计 QDII 基金池内实际持有的基金
 - CSV 导出、移动端自适应卡片布局
 - 定时自动采集 + 首次启动自动全量采集
 - **日申购额度监控**：交易日 9:00–19:00 每小时检测额度与申购状态变化，未读徽标提醒 + webhook 推送
@@ -616,8 +617,10 @@ APScheduler 在应用进程内运行（`Asia/Shanghai` 时区）：
 | `fetch_log` | 采集日志：状态（running/done/failed）、起止时间、条数、错误信息 |
 | `quota_changes` | 额度变动事件：基金代码、字段（`daily_limit`/`purchase_status`）、旧值、新值、检测时间、已读标记 |
 | `quota_daily` | 每日额度快照（`code + trade_date` 主键），额度曲线的数据来源 |
+| `fund_watchlist` | 主页自选基金代码 |
+| `fund_ratings` | 主页自评级（基金代码 + 1-5 星） |
 
-表结构在 `app.py` 的 `init_db()` 中创建；升级时通过 `ALTER TABLE` 自动补列，**不需要手动迁移**。
+表结构在 `app.py` 的 `init_db()` 中创建；升级时通过 `ALTER TABLE` 自动补列，**不需要手动迁移**。主页自选和自评级分别保存在 `fund_watchlist`、`fund_ratings` 表中。
 
 财富管理使用同一数据库中的 `wm_asset`、`wm_transaction`、`wm_price`、`wm_fx_rate`、`wm_dca_plan`、`wm_dca_order`、`wm_account`、`wm_account_balance`、`wm_trade_calendar`、`wm_sync_log`、`wm_import_log` 等表，均由 `wealth/schema.py` 自动创建。
 
@@ -629,6 +632,11 @@ APScheduler 在应用进程内运行（`Asia/Shanghai` 时区）：
 |------|------|------|
 | GET | `/` | 前端页面 |
 | GET | `/api/funds` | 基金列表。参数：`search`、`sort`、`order`、`page`、`per_page`、`exclude`、`filter=pos_1y\|ann_gt`、`ann_threshold` |
+| GET | `/api/fund-user-data` | 自选和自评级 |
+| POST | `/api/fund-user-data` | 批量写入自选/评级。body：`watchlist`、`ratings`、`mode=replace\|merge` |
+| POST | `/api/fund-watchlist` | 单只基金自选切换。body：`{"code": "513100", "active": true}` |
+| POST | `/api/fund-rating` | 单只基金评级。body：`{"code": "513100", "rating": 1-5}`，`0` 表示清除 |
+| GET | `/api/fund-holdings` | 财富管理中实际持有的场内/场外基金代码，仅限 QDII 基金池 |
 | GET | `/api/stats` | 统计：总数、近 1 年正收益数、年化超阈值数（`ann_threshold`，默认 20） |
 | GET | `/api/fetch/status` | 最近一次采集状态 |
 | GET | `/api/quota/changes` | 未读额度变动（用于 Tab 徽标，最多 50 条） |
@@ -671,6 +679,7 @@ docker compose up -d --build
 ```
 
 - 备份数据：直接复制 `qdii.db`（连同 `-wal`/`-shm`），或 `docker cp fundx:/app/data/qdii.db ./backup.db`
+- 升级后首次打开主页会自动把浏览器 `localStorage` 中的自选/评级迁移到数据库；持仓改为从财富管理自动读取，不再使用本地 `fund_positions`
 - 从旧版本（库在容器内）升级，见[方式二第 3 节](#3-首次从旧版本升级旧库还在容器里)
 
 ---
@@ -741,6 +750,11 @@ Docker 部署改 compose 的 `ports` 左侧端口（如 `"8080:5000"`）；本�
 ---
 
 ## 更新日志
+
+### 2026-11-20
+
+- **主页数据持久化**：自选/自评级改存 SQLite（`fund_watchlist` / `fund_ratings`），首次打开自动迁移浏览器旧数据，导出/导入同步调整
+- **主页持仓接入财富管理**：自动读取财富管理实际持有的场内/场外基金，且仅统计 QDII 基金池内代码；持仓标记改为只读
 
 ### 2026-11-17
 

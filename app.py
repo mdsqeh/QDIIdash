@@ -21,12 +21,14 @@ from dotenv import load_dotenv
 # 在导入业务模块前加载项目目录下的 .env（已有系统环境变量优先）。
 load_dotenv(Path(__file__).resolve().parent / '.env')
 
-from flask import Flask, g, jsonify, render_template, request
+from flask import Flask, current_app, g, jsonify, render_template, request
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from fetcher import fetch_all, _fetch_incremental, _fetch_all_codes
 from quota_watcher import check_quotas
 from wealth import register as register_wealth, register_wealth_jobs, startup_catchup
+from wealth.db import connect as wealth_connect
+from wealth.portfolio import build_positions
 
 app = Flask(__name__)
 register_wealth(app)
@@ -37,6 +39,48 @@ DATA_DIR = os.environ.get('DATA_DIR', DB_DIR)
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, 'qdii.db')
 _FULL_FETCH_FLAG = DB_PATH + '.full_fetch_flag'
+
+
+def _now_iso():
+    return datetime.now(timezone.utc).isoformat(timespec='seconds')
+
+
+def _ensure_user_tables(conn):
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS fund_watchlist (
+            code       TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS fund_ratings (
+            code       TEXT PRIMARY KEY,
+            rating     INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+    """)
+    conn.commit()
+
+
+def _read_user_data(conn):
+    return {
+        'watchlist': [r['code'] for r in conn.execute(
+            'SELECT code FROM fund_watchlist ORDER BY rowid'
+        ).fetchall()],
+        'ratings': {r['code']: r['rating'] for r in conn.execute(
+            'SELECT code, rating FROM fund_ratings'
+        ).fetchall()},
+    }
+
+
+def _clean_fund_code(value):
+    return str(value or '').strip()[:32]
+
+
+def _parse_rating(value):
+    try:
+        rating = int(value)
+    except (TypeError, ValueError):
+        return None
+    return rating if 1 <= rating <= 5 else None
 
 
 def get_db():
@@ -114,6 +158,15 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_quota_daily_date
                 ON quota_daily (trade_date);
+            CREATE TABLE IF NOT EXISTS fund_watchlist (
+                code       TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS fund_ratings (
+                code       TEXT PRIMARY KEY,
+                rating     INTEGER NOT NULL,
+                updated_at TEXT NOT NULL
+            );
         """)
 
     # 迁移：给已有数据库加新列
@@ -411,6 +464,132 @@ def api_stats():
     ann_threshold = request.args.get('ann_threshold', 20, type=float)
     ann_gt = db.execute("SELECT COUNT(*) AS cnt FROM funds WHERE ret_ann > ?", (ann_threshold,)).fetchone()['cnt']
     return jsonify({'total': total, 'pos_1y': pos, 'ret_ann_gt_20': ann_gt})
+
+
+def _dashboard_db():
+    db = get_db()
+    _ensure_user_tables(db)
+    return db
+
+
+@app.route('/api/fund-user-data', methods=['GET', 'POST'])
+def api_fund_user_data():
+    """自选和自评级。POST 用于首次本地数据迁移或备份导入。"""
+    db = _dashboard_db()
+    if request.method == 'GET':
+        return jsonify(_read_user_data(db))
+
+    payload = request.get_json(silent=True) or {}
+    mode = payload.get('mode') or 'replace'
+    if mode not in ('replace', 'merge'):
+        return jsonify({'error': 'mode 参数无效'}), 400
+
+    now = _now_iso()
+    if 'watchlist' in payload:
+        raw_watchlist = payload.get('watchlist')
+        if not isinstance(raw_watchlist, list):
+            return jsonify({'error': '自选数据格式无效'}), 400
+        codes = []
+        seen = set()
+        for item in raw_watchlist:
+            code = _clean_fund_code(item)
+            if code and code not in seen:
+                seen.add(code)
+                codes.append(code)
+        if mode == 'replace':
+            db.execute('DELETE FROM fund_watchlist')
+        db.executemany(
+            'INSERT OR IGNORE INTO fund_watchlist (code, created_at) VALUES (?, ?)',
+            [(code, now) for code in codes],
+        )
+
+    if 'ratings' in payload:
+        raw_ratings = payload.get('ratings')
+        if not isinstance(raw_ratings, dict):
+            return jsonify({'error': '评级数据格式无效'}), 400
+        rows = []
+        for code, value in raw_ratings.items():
+            code = _clean_fund_code(code)
+            rating = _parse_rating(value)
+            if code and rating:
+                rows.append((code, rating, now))
+        if mode == 'replace':
+            db.execute('DELETE FROM fund_ratings')
+        sql = ('INSERT OR IGNORE INTO fund_ratings (code, rating, updated_at) '
+               'VALUES (?, ?, ?)') if mode == 'merge' else (
+               'INSERT OR REPLACE INTO fund_ratings (code, rating, updated_at) '
+               'VALUES (?, ?, ?)')
+        db.executemany(sql, rows)
+
+    db.commit()
+    return jsonify(_read_user_data(db))
+
+
+@app.route('/api/fund-watchlist', methods=['POST'])
+def api_fund_watchlist():
+    payload = request.get_json(silent=True) or {}
+    code = _clean_fund_code(payload.get('code'))
+    if not code:
+        return jsonify({'error': '缺少基金代码'}), 400
+    db = _dashboard_db()
+    if payload.get('active'):
+        db.execute(
+            'INSERT OR IGNORE INTO fund_watchlist (code, created_at) VALUES (?, ?)',
+            (code, _now_iso()),
+        )
+    else:
+        db.execute('DELETE FROM fund_watchlist WHERE code = ?', (code,))
+    db.commit()
+    return jsonify(_read_user_data(db))
+
+
+@app.route('/api/fund-rating', methods=['POST'])
+def api_fund_rating():
+    payload = request.get_json(silent=True) or {}
+    code = _clean_fund_code(payload.get('code'))
+    if not code:
+        return jsonify({'error': '缺少基金代码'}), 400
+    raw_rating = payload.get('rating', 0)
+    db = _dashboard_db()
+    if raw_rating in (0, '0', None, ''):
+        db.execute('DELETE FROM fund_ratings WHERE code = ?', (code,))
+    else:
+        rating = _parse_rating(raw_rating)
+        if not rating:
+            return jsonify({'error': '评级必须为 1-5'}), 400
+        db.execute(
+            'INSERT OR REPLACE INTO fund_ratings (code, rating, updated_at) '
+            'VALUES (?, ?, ?)',
+            (code, rating, _now_iso()),
+        )
+    db.commit()
+    return jsonify(_read_user_data(db))
+
+
+@app.route('/api/fund-holdings')
+def api_fund_holdings():
+    """主页持仓：财富管理中的场内/场外基金，且必须属于 QDII 基金池。"""
+    db = get_db()
+    wealth_db = wealth_connect(current_app.config.get('WM_DB_PATH'))
+    try:
+        positions, _ = build_positions(wealth_db)
+    except sqlite3.OperationalError:
+        return jsonify({'codes': []})
+    finally:
+        wealth_db.close()
+    qdii_codes = {r['code'] for r in db.execute('SELECT code FROM funds').fetchall()}
+    codes = set()
+    for position in positions:
+        if not position.get('has_position'):
+            continue
+        market = position.get('market')
+        is_fund = market == 'FUND_CN' or (
+            market == 'CN' and position.get('asset_class') in ('fund', 'etf')
+        )
+        symbol = _clean_fund_code(position.get('symbol'))
+        if is_fund and symbol in qdii_codes:
+            codes.add(symbol)
+    return jsonify({'codes': sorted(codes)})
 
 
 @app.route('/api/fetch/status')

@@ -38,12 +38,14 @@ Flask + SQLite 后端、纯前端展示的 QDII 基金数据看板。自动采�
 - 定时自动采集 + 首次启动自动全量采集
 - **日申购额度监控**：交易日 9:00–19:00 每小时检测额度与申购状态变化，未读徽标提醒 + webhook 推送
 - **额度历史曲线**：每日快照落库，点击基金「日额度」可查看 30 天 / 90 天 / 1 年 / 全部区间的阶梯走势
+- **「额度监测」Tab**：按基金 + 份额 + 渠道展示首批 10 家基金公司的直销 / 第三方代销额度，自动解析证监会基金公告并保留原文链接、生效日、置信度；支持人工修正，人工结果不会被后续公告静默覆盖
 
 ### 数据源
 
 | 类型 | 数据源 | 采集引擎 | 更新时间（北京时间） |
 |------|--------|----------|-------------------|
 | QDII 基金 | 东方财富（天天基金） | AKShare | 每月 1 号 21:00 全量 / 每日 21:00 增量 |
+| 渠道额度公告 | 中国证监会基金电子披露网站（CSRC） | `quota/` + requests + pypdf | 每日 8:10 / 12:10 / 17:10 增量检查 |
 
 ---
 
@@ -202,6 +204,15 @@ fundx/
 ├── app.py                  # Flask 主应用：路由、定时任务、额度曲线计算
 ├── fetcher.py              # QDII 全量/增量采集引擎（AKShare）
 ├── quota_watcher.py        # 日额度变动检测 + webhook 推送
+├── quota/                  # 渠道额度公告监测模块
+│   ├── schema.py           # quota_* 表结构与首批 10 家公司种子数据
+│   ├── sources.py          # CSRC 公告列表 / PDF 下载
+│   ├── parser.py           # 渠道、金额、状态、生效日解析
+│   ├── service.py          # 当前额度汇总、人工修正
+│   ├── jobs.py             # 增量检查任务
+│   └── routes.py           # /api/quota/monitor/* 接口
+├── docs/
+│   └── quota-monitoring-plan.md # 额度监测方案
 ├── wealth/                 # 个人财富管理模块
 │   ├── __init__.py         # 模块导出
 │   ├── db.py               # 财富 DB 连接/时区
@@ -221,7 +232,9 @@ fundx/
 │   └── vendor/
 │       └── echarts.min.js  # 本地 ECharts
 ├── tests/
-│   └── test_wealth_core.py # 财富管理核心单元测试
+│   ├── test_wealth_core.py # 财富管理核心单元测试
+│   ├── test_dashboard.py   # 主页自选/评级/持仓测试
+│   └── test_quota_monitor.py # 额度公告解析与人工修正测试
 ├── requirements.txt        # Python 依赖
 ├── .env.example            # 环境变量模板（复制为 .env，.env 不提交）
 ├── Dockerfile              # 镜像构建
@@ -601,6 +614,7 @@ APScheduler 在应用进程内运行（`Asia/Shanghai` 时区）：
 | 增量更新 `daily_incremental` | 每日 21:00 | 只更新 `nav`、`daily_change`、`premium_discount`、`purchase_status`、`daily_limit`；同时检测新基金并全量采集。**若当天已全量采集则自动跳过** |
 | 额度检测 `quota_check` | 周一至周五 9:00–19:00 每小时整点 | 检测日累计限额与申购状态变化，写快照 + 变动事件 + webhook |
 | 额度检测 `quota_check_after_fetch` | 周一至周五 21:05 | 增量更新后再校验一次额度 |
+| 渠道公告检查 `quota_announcement_check` | 每日 8:10 / 12:10 / 17:10 | 抓取首批 10 家基金公司的 CSRC 公告，解析直销 / 代销额度并写入 `quota_*` 表 |
 
 补充行为：
 
@@ -618,6 +632,12 @@ APScheduler 在应用进程内运行（`Asia/Shanghai` 时区）：
 | `fetch_log` | 采集日志：状态（running/done/failed）、起止时间、条数、错误信息 |
 | `quota_changes` | 额度变动事件：基金代码、字段（`daily_limit`/`purchase_status`）、旧值、新值、检测时间、已读标记 |
 | `quota_daily` | 每日额度快照（`code + trade_date` 主键），额度曲线的数据来源 |
+| `quota_company` | 额度监测的首批基金公司及官网入口 |
+| `quota_fund` | 额度监测基金池（代码、份额、币种、最后检查时间） |
+| `quota_source` | CSRC 来源状态、最后检查/成功时间、错误信息 |
+| `quota_announcement` | 公告原文链接、PDF 文本、解析状态、已读标记 |
+| `quota_limit` | 按渠道拆分的额度记录（直销 / 代销 / 全渠道、金额、状态、生效日、置信度、人工修正） |
+| `quota_run` | 每次渠道公告检查任务的运行结果 |
 | `fund_watchlist` | 主页自选基金代码 |
 | `fund_ratings` | 主页自评级（基金代码 + 1-5 星） |
 
@@ -640,11 +660,18 @@ APScheduler 在应用进程内运行（`Asia/Shanghai` 时区）：
 | GET | `/api/fund-holdings` | 财富管理中实际持有的场内/场外基金代码，仅限 QDII 基金池 |
 | GET | `/api/stats` | 统计：总数、近 1 年正收益数、年化超阈值数（`ann_threshold`，默认 20） |
 | GET | `/api/fetch/status` | 最近一次采集状态 |
-| GET | `/api/quota/changes` | 未读额度变动（用于 Tab 徽标，最多 50 条） |
+| GET | `/api/quota/changes` | 未读日额度变动（旧版变动列表，最多 50 条） |
 | GET | `/api/quota/history` | 额度变动历史。参数：`date`（默认今天）、`is_read`（`0`/`1`） |
 | GET | `/api/quota/fund/<code>` | 单只基金额度曲线。参数：`days=30\|90\|365\|all` |
 | POST | `/api/quota/ack` | 全部标记已读 |
 | POST | `/api/quota/ack-single` | 单条标记已读，body：`{"id": 123}` |
+| GET | `/api/quota/monitor/funds` | 渠道额度主表。参数：`search`、`company`、`status=limited\|paused\|available`、`changed=1` |
+| GET | `/api/quota/monitor/fund/<code>` | 单只基金渠道额度、公告历史和来源状态 |
+| POST | `/api/quota/monitor/manual` | 人工修正。body：`code`、`channel_type=direct\|agency\|all`、`status=amount_cap\|paused\|normal\|unknown`、`amount`、`note`；`clear=true` 清除该渠道人工结果 |
+| POST | `/api/quota/monitor/check` | 立即触发一次渠道公告检查 |
+| GET | `/api/quota/monitor/status` | 最近一次公告检查运行状态 |
+| GET | `/api/quota/monitor/unread` | 公告 + 日额度变动的未读总数 |
+| POST | `/api/quota/monitor/ack` | 渠道公告和日额度变动全部标记已读 |
 
 ---
 
@@ -751,6 +778,15 @@ Docker 部署改 compose 的 `ports` 左侧端口（如 `"8080:5000"`）；本�
 ---
 
 ## 更新日志
+
+### 2026-11-22
+
+- **额度监测 Tab**：原「额度变动」升级为「额度监测」，新增首批 10 家基金公司（南方、万家、大成、广发、国泰、华安、华夏、博时、易方达、嘉实）的渠道额度主表
+- **直销 / 第三方拆分**：额度按 `direct` / `agency` / `all` 存储，主表分别展示直销和第三方代销额度；公告只写“代销渠道”时不伪造具体平台
+- **CSRC 公告采集**：新增 `quota/` 模块，从证监会基金电子披露网站抓取公告 PDF，提取渠道、金额、状态、生效日，并保留原文链接、原文片段和解析置信度
+- **人工修正**：支持按渠道人工设置额度 / 暂停 / 正常状态，人工结果优先且不会被后续公告静默覆盖
+- **状态展示**：区分最后公告日期与最后检查时间；旧「全渠道日额度变动记录」保留在页面下方作为参考
+- **依赖补全**：`requirements.txt` 增加 `pypdf`（公告 PDF 文本提取）
 
 ### 2026-11-20
 

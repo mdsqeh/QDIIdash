@@ -13,8 +13,17 @@ import math
 import sqlite3
 import threading
 import os
+import sys
 from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
+
+# Windows 控制台默认 GBK 时，日志里的 emoji 会触发 UnicodeEncodeError 并导致
+# 启动失败。统一改成 UTF-8 输出；不支持 reconfigure 的环境直接跳过。
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+except (AttributeError, OSError):
+    pass
 
 from dotenv import load_dotenv
 
@@ -25,6 +34,12 @@ from flask import Flask, current_app, g, jsonify, render_template, request
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from fetcher import fetch_all, _fetch_incremental, _fetch_all_codes
+from quota import (
+    init_quota_db,
+    register_quota,
+    register_quota_jobs,
+    start_quota_check_async,
+)
 from quota_watcher import check_quotas
 from wealth import register as register_wealth, register_wealth_jobs, startup_catchup
 from wealth.db import connect as wealth_connect
@@ -39,6 +54,9 @@ DATA_DIR = os.environ.get('DATA_DIR', DB_DIR)
 os.makedirs(DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(DATA_DIR, 'qdii.db')
 _FULL_FETCH_FLAG = DB_PATH + '.full_fetch_flag'
+
+# 额度公告监测：使用同目录数据库，API 注册时自动建表并写入首批基金公司。
+register_quota(app, lambda: DB_PATH)
 
 
 def _now_iso():
@@ -214,6 +232,8 @@ def init_db():
             """)
     except Exception:
         pass
+
+    init_quota_db(DB_PATH)
 
 
 # ── 数据采集（后台线程） ─────────────────────────────────────────
@@ -892,9 +912,10 @@ def _start_scheduler():
     scheduler.add_job(_do_fetch_incremental, 'cron', hour=21, minute=0, id='daily_incremental')
     scheduler.add_job(_do_check_quota, 'cron', day_of_week='mon-fri', hour='9-19', minute=0, id='quota_check')
     scheduler.add_job(_do_check_quota, 'cron', day_of_week='mon-fri', hour=21, minute=5, id='quota_check_after_fetch')
+    register_quota_jobs(scheduler, lambda: DB_PATH)
     register_wealth_jobs(scheduler)
     scheduler.start()
-    print("📅 定时任务已启动：每月1号 21:00 全量采集，每日 21:00 增量更新，额度监控交易日 9:00-19:00 每小时及 21:05")
+    print("📅 定时任务已启动：每月1号 21:00 全量采集，每日 21:00 增量更新，额度监控交易日 9:00-19:00 每小时及 21:05，额度公告每日 8:10/12:10/17:10")
 
 
 if __name__ == '__main__':
@@ -911,5 +932,11 @@ if __name__ == '__main__':
         threading.Thread(target=_do_fetch, daemon=True).start()
     else:
         print("⏭️ QDII 数据已存在，跳过启动采集")
+
+    with sqlite3.connect(DB_PATH) as conn:
+        has_quota_run = conn.execute("SELECT COUNT(*) FROM quota_run").fetchone()[0] > 0
+    if not has_quota_run:
+        print("🔄 额度公告暂无检查记录，启动后执行一次...")
+        start_quota_check_async(DB_PATH)
 
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)

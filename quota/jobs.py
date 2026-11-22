@@ -74,7 +74,8 @@ def run_quota_check(db_path):
             try:
                 external_id = source['external_id']
                 if not external_id:
-                    external_id = fetch_csrc_fund_id(session, fund['code'])
+                    lookup_code = fund['csrc_code'] or fund['code']
+                    external_id = fetch_csrc_fund_id(session, lookup_code)
                 external_id, announcements = fetch_csrc_announcements(
                     session, fund, fund_id=external_id, limit=30,
                 )

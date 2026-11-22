@@ -32,6 +32,15 @@ class QuotaParserTests(unittest.TestCase):
         self.assertTrue(is_share_class_relevant(
             '关于调整华夏纳斯达克100ETF联接（QDII）A类、C类基金份额申购限额的公告', fund_a
         ))
+        fund_i = [item for item in FUNDS if item['code'] == '021000'][0]
+        self.assertTrue(is_share_class_relevant(
+            '关于调整南方纳斯达克100指数发起式证券投资基金（QDII）I类基金份额申购限额的公告',
+            fund_i,
+        ))
+        self.assertFalse(is_share_class_relevant(
+            '关于调整南方纳斯达克100指数发起式证券投资基金（QDII）A类基金份额申购限额的公告',
+            fund_i,
+        ))
 
     def test_channel_specific_parse(self):
         fund = [item for item in FUNDS if item['code'] == '015299'][0]
@@ -98,6 +107,30 @@ class QuotaServiceTests(unittest.TestCase):
             ),
         )
         self.conn.commit()
+
+    def test_i_share_uses_parent_csrc_code_and_direct_seed(self):
+        row = self.conn.execute(
+            "SELECT id, csrc_code FROM quota_fund WHERE code = '021000'"
+        ).fetchone()
+        self.assertEqual(row['csrc_code'], '016452')
+        manual = self.conn.execute(
+            """SELECT amount FROM quota_limit
+               WHERE fund_id = ? AND channel_type = 'direct' AND is_manual = 1""",
+            (row['id'],),
+        ).fetchone()
+        self.assertEqual(manual['amount'], 200.0)
+
+        set_manual_limit(self.conn, '021000', {
+            'channel_type': 'direct',
+            'clear': True,
+        })
+        init_quota_db(self.db_path)
+        manual = self.conn.execute(
+            """SELECT 1 FROM quota_limit
+               WHERE fund_id = ? AND channel_type = 'direct' AND is_manual = 1""",
+            (row['id'],),
+        ).fetchone()
+        self.assertIsNone(manual)
 
     def test_newer_all_channel_overrides_channel_rows(self):
         ann = self._add_announcement('调整申购限额', '2026-01-01')

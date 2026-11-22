@@ -77,6 +77,17 @@ FUNDS = [
         'official_url': 'https://www.nffund.com',
     },
     {
+        'company': '南方基金',
+        'code': '021000',
+        'name': '南方纳斯达克100指数发起(QDII)I',
+        'share_class': 'I',
+        'currency': 'CNY',
+        'csrc_code': '016452',
+        'manual_direct_amount': 200,
+        'manual_note': '初始人工记录：用户反馈南方基金直销 200 元',
+        'official_url': 'https://www.nffund.com',
+    },
+    {
         'company': '万家基金',
         'code': '019441',
         'name': '万家纳斯达克100指数发起式(QDII)A',
@@ -166,6 +177,7 @@ CREATE TABLE IF NOT EXISTS quota_fund (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     company_id         INTEGER NOT NULL,
     code               TEXT NOT NULL UNIQUE,
+    csrc_code          TEXT,
     name               TEXT NOT NULL,
     share_class        TEXT NOT NULL DEFAULT 'A',
     currency           TEXT NOT NULL DEFAULT 'CNY',
@@ -262,6 +274,11 @@ def init_quota_db(db_path):
         conn.execute('PRAGMA journal_mode=WAL')
         conn.execute('PRAGMA busy_timeout=5000')
         conn.executescript(SCHEMA)
+        fund_columns = {
+            row[1] for row in conn.execute('PRAGMA table_info(quota_fund)')
+        }
+        if 'csrc_code' not in fund_columns:
+            conn.execute('ALTER TABLE quota_fund ADD COLUMN csrc_code TEXT')
         now = _now_iso()
         for company in COMPANIES:
             conn.execute(
@@ -279,14 +296,35 @@ def init_quota_db(db_path):
             ).fetchone()
             company_id = row[0]
             for fund in (f for f in FUNDS if f['company'] == company['short_name']):
-                conn.execute(
+                cur = conn.execute(
                     """INSERT OR IGNORE INTO quota_fund
-                       (company_id, code, name, share_class, currency, index_name,
-                        official_url, enabled, created_at)
-                       VALUES (?, ?, ?, ?, ?, '纳斯达克100', ?, 1, ?)""",
+                       (company_id, code, csrc_code, name, share_class, currency,
+                        index_name, official_url, enabled, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, '纳斯达克100', ?, 1, ?)""",
                     (
-                        company_id, fund['code'], fund['name'], fund['share_class'],
-                        fund['currency'], fund['official_url'], now,
+                        company_id, fund['code'], fund.get('csrc_code') or fund['code'],
+                        fund['name'], fund['share_class'], fund['currency'],
+                        fund['official_url'], now,
                     ),
                 )
+                if cur.rowcount and fund.get('manual_direct_amount') is not None:
+                    note = fund.get('manual_note') or '初始人工记录'
+                    conn.execute(
+                        """INSERT INTO quota_limit
+                           (fund_id, announcement_id, channel_type, channel_name,
+                            status, amount, currency, limit_text, business_type,
+                            effective_from, effective_to, confidence, is_manual,
+                            note, created_at, updated_at)
+                           VALUES (?, NULL, 'direct', '直销', 'amount_cap', ?, 'CNY',
+                                   ?, 'subscription', ?, NULL, NULL, 1, ?, ?, ?)""",
+                        (
+                            cur.lastrowid, fund['manual_direct_amount'],
+                            f'人工记录：直销 {fund["manual_direct_amount"]} 元',
+                            now[:10], note, now, now,
+                        ),
+                    )
+        conn.execute(
+            "UPDATE quota_fund SET csrc_code = code "
+            "WHERE csrc_code IS NULL OR csrc_code = ''"
+        )
         conn.commit()

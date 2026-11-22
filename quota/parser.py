@@ -48,14 +48,19 @@ def is_relevant_title(title):
 def is_share_class_relevant(title, fund):
     title = normalize_text(title)
     share_class = (fund.get('share_class') or 'A').upper()
-    # An I-class-only announcement should not update an A-class seed row.
-    if ('I类' in title or 'I 类' in title or 'I份额' in title) and share_class != 'I':
-        if not any(k in title for k in ('A类', 'A 类', 'C类', 'C 类')):
+    has_i = any(k in title for k in ('I类', 'I 类', 'I份额'))
+    has_a = any(k in title for k in ('A类', 'A 类', 'A份额'))
+    has_c = any(k in title for k in ('C类', 'C 类', 'C份额'))
+    # I-class-only announcements should not update A/C rows; A/C-only
+    # announcements should not update the I-class row.
+    if share_class == 'I':
+        if (has_a or has_c) and not has_i:
             return False
+    elif has_i and not (has_a or has_c):
+        return False
     # A C-class-only announcement should not update an A-class seed row.
-    if ('C类' in title or 'C 类' in title or 'C份额' in title) and share_class == 'A':
-        if not any(k in title for k in ('A类', 'A 类', 'A份额')):
-            return False
+    if share_class == 'A' and has_c and not has_a:
+        return False
     # A USD-only announcement should not update a CNY row.
     if '美元' in title and '人民币' not in title and (fund.get('currency') or 'CNY') != 'USD':
         return False

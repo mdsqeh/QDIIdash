@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY app.py /app/app.py
 COPY fetcher.py /app/fetcher.py
 COPY quota_watcher.py /app/quota_watcher.py
+COPY quota /app/quota
 COPY templates /app/templates
 COPY static /app/static
 COPY wealth /app/wealth

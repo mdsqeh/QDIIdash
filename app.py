@@ -39,6 +39,7 @@ from quota import (
     register_quota,
     register_quota_jobs,
     start_quota_check_async,
+    sync_nasdaq100_funds,
 )
 from quota_watcher import check_quotas
 from wealth import register as register_wealth, register_wealth_jobs, startup_catchup
@@ -920,6 +921,7 @@ def _start_scheduler():
 
 if __name__ == '__main__':
     init_db()
+    sync_nasdaq100_funds(DB_PATH)
     _start_scheduler()
     threading.Thread(target=startup_catchup, daemon=True).start()
 

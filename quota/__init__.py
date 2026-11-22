@@ -1,4 +1,5 @@
 """Quota-monitoring package."""
+from .discovery import sync_nasdaq100_funds
 from .jobs import run_quota_check, start_quota_check_async
 from .routes import quota_bp
 from .schema import init_quota_db
@@ -27,4 +28,5 @@ __all__ = [
     'register_quota_jobs',
     'run_quota_check',
     'start_quota_check_async',
+    'sync_nasdaq100_funds',
 ]

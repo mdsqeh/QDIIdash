@@ -3,6 +3,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
+from .discovery import sync_nasdaq100_funds
 from .parser import parse_announcement
 from .schema import init_quota_db
 from .sources import (
@@ -47,7 +48,12 @@ def run_quota_check(db_path):
     announcement_count = 0
     limit_count = 0
     errors = []
+    sync_info = {}
     try:
+        try:
+            sync_info = sync_nasdaq100_funds(db_path)
+        except Exception as exc:
+            errors.append(f'list_sync: {exc}')
         now = _now_iso()
         cur = conn.execute(
             """INSERT INTO quota_run (status, started_at)
@@ -71,6 +77,7 @@ def run_quota_check(db_path):
         for fund in funds:
             source = _ensure_source(conn, fund['id'])
             checked_at = _now_iso()
+            first_fund_check = not fund['last_checked_at']
             try:
                 external_id = source['external_id']
                 if not external_id:
@@ -111,7 +118,7 @@ def run_quota_check(db_path):
                             fund['id'], ann['source_type'], ann['source_url'],
                             ann['external_id'], ann['title'], ann.get('published_at'),
                             checked_at, text, parse_status, confidence,
-                            1 if is_first_run else 0, checked_at,
+                            1 if (is_first_run or first_fund_check) else 0, checked_at,
                         ),
                     )
                     announcement_id = cur.lastrowid
@@ -178,6 +185,7 @@ def run_quota_check(db_path):
             'funds': len(funds),
             'announcements': announcement_count,
             'limits': limit_count,
+            'list_sync': sync_info,
             'errors': errors,
         }
     except Exception as exc:

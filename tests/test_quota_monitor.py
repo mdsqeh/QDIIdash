@@ -41,6 +41,23 @@ class QuotaParserTests(unittest.TestCase):
             '关于调整南方纳斯达克100指数发起式证券投资基金（QDII）A类基金份额申购限额的公告',
             fund_i,
         ))
+        fund_d = {'share_class': 'D', 'currency': 'CNY'}
+        self.assertFalse(is_share_class_relevant(
+            '关于调整某基金A类基金份额申购限额的公告', fund_d
+        ))
+        self.assertTrue(is_share_class_relevant(
+            '关于调整某基金D类基金份额申购限额的公告', fund_d
+        ))
+        fund_usd = {'share_class': 'A', 'currency': 'USD'}
+        self.assertFalse(is_share_class_relevant(
+            '关于调整某基金A类人民币份额申购限额的公告', fund_usd
+        ))
+        self.assertTrue(is_share_class_relevant(
+            '关于调整某基金A类美元份额申购限额的公告', fund_usd
+        ))
+        self.assertTrue(is_share_class_relevant(
+            '关于调整某基金申购限额的公告', fund_usd
+        ))
 
     def test_channel_specific_parse(self):
         fund = [item for item in FUNDS if item['code'] == '015299'][0]

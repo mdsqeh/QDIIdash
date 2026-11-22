@@ -184,6 +184,8 @@ CREATE TABLE IF NOT EXISTS quota_fund (
     index_name         TEXT NOT NULL DEFAULT '纳斯达克100',
     official_url       TEXT,
     enabled            INTEGER NOT NULL DEFAULT 1,
+    discovery_source   TEXT,
+    last_seen_at       TEXT,
     last_checked_at    TEXT,
     last_announcement_at TEXT,
     created_at         TEXT NOT NULL,
@@ -277,8 +279,13 @@ def init_quota_db(db_path):
         fund_columns = {
             row[1] for row in conn.execute('PRAGMA table_info(quota_fund)')
         }
-        if 'csrc_code' not in fund_columns:
-            conn.execute('ALTER TABLE quota_fund ADD COLUMN csrc_code TEXT')
+        for column, ddl in (
+            ('csrc_code', 'TEXT'),
+            ('discovery_source', 'TEXT'),
+            ('last_seen_at', 'TEXT'),
+        ):
+            if column not in fund_columns:
+                conn.execute(f'ALTER TABLE quota_fund ADD COLUMN {column} {ddl}')
         now = _now_iso()
         for company in COMPANIES:
             conn.execute(

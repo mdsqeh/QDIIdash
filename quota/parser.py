@@ -48,21 +48,17 @@ def is_relevant_title(title):
 def is_share_class_relevant(title, fund):
     title = normalize_text(title)
     share_class = (fund.get('share_class') or 'A').upper()
-    has_i = any(k in title for k in ('I类', 'I 类', 'I份额'))
-    has_a = any(k in title for k in ('A类', 'A 类', 'A份额'))
-    has_c = any(k in title for k in ('C类', 'C 类', 'C份额'))
-    # I-class-only announcements should not update A/C rows; A/C-only
-    # announcements should not update the I-class row.
-    if share_class == 'I':
-        if (has_a or has_c) and not has_i:
-            return False
-    elif has_i and not (has_a or has_c):
+    classes = {
+        letter for letter in 'ACIDE'
+        if any(marker in title for marker in (f'{letter}类', f'{letter} 类', f'{letter}份额'))
+    }
+    if classes and share_class not in classes:
         return False
-    # A C-class-only announcement should not update an A-class seed row.
-    if share_class == 'A' and has_c and not has_a:
+    currency = (fund.get('currency') or 'CNY').upper()
+    # A currency-specific announcement should only update that currency.
+    if '美元' in title and '人民币' not in title and currency != 'USD':
         return False
-    # A USD-only announcement should not update a CNY row.
-    if '美元' in title and '人民币' not in title and (fund.get('currency') or 'CNY') != 'USD':
+    if '人民币' in title and '美元' not in title and currency != 'CNY':
         return False
     return True
 
@@ -103,8 +99,8 @@ def _business_type(text):
 
 
 _AMOUNT_PATTERNS = (
-    re.compile(r'(?:不超过|不得超过|限额|限制金额|金额上限|上限|限额为|上限为)\s*(?:人民币)?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(万元|元)?'),
-    re.compile(r'([0-9][0-9,]*(?:\.[0-9]+)?)\s*(万元|元)\s*(?:以内|以下)'),
+    re.compile(r'(?:不超过|不得超过|限额|限制金额|金额上限|上限|限额为|上限为)\s*(?:人民币)?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(万美元|万元|美元|元)?'),
+    re.compile(r'([0-9][0-9,]*(?:\.[0-9]+)?)\s*(万美元|万元|美元|元)\s*(?:以内|以下)'),
 )
 
 
@@ -118,7 +114,7 @@ def _extract_amount(text, currency='CNY'):
             except ValueError:
                 continue
             unit = match.group(2) or ''
-            if unit == '万元':
+            if unit in ('万元', '万美元'):
                 number *= 10000
             if number <= 0 or number >= 1_000_000_000:
                 continue

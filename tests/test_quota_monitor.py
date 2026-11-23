@@ -6,7 +6,12 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 
-from quota.parser import is_relevant_title, is_share_class_relevant, parse_announcement
+from quota.parser import (
+    _extract_amount,
+    is_relevant_title,
+    is_share_class_relevant,
+    parse_announcement,
+)
 from quota.schema import FUNDS, init_quota_db
 from quota.service import connect, get_fund_detail, set_manual_limit
 
@@ -57,6 +62,59 @@ class QuotaParserTests(unittest.TestCase):
         ))
         self.assertTrue(is_share_class_relevant(
             '关于调整某基金申购限额的公告', fund_usd
+        ))
+
+    def test_temporary_holiday_suspension_filter(self):
+        title = (
+            '关于旗下部分基金2026年11月26日暂停申购、赎回、转换、'
+            '定期定额投资业务的提示性公告'
+        )
+        self.assertFalse(is_relevant_title(title))
+        fund = {'code': '161130', 'share_class': 'A', 'currency': 'CNY'}
+        text = (
+            '根据境外主要投资市场休市安排，旗下部分基金2026年11月26日将暂停'
+            '申购、赎回、转换、定期定额投资业务，并于2026年11月27日恢复办理。'
+        )
+        self.assertEqual(parse_announcement(title, text, fund, '2026-11-23'), [])
+        self.assertFalse(is_relevant_title(
+            '关于嘉实纳斯达克100ETF联接（QDII）2026年1月19日暂停申购、'
+            '赎回及定期定额投资业务的公告'
+        ))
+        self.assertTrue(is_relevant_title(
+            '关于广发纳斯达克100ETF联接（QDII）继续暂停申购业务的提示性公告'
+        ))
+
+    def test_amount_extraction_ignores_total_fund_size(self):
+        self.assertIsNone(_extract_amount('基金总规模不超过人民币24亿元', 'CNY')[0])
+        self.assertEqual(
+            _extract_amount('累计金额限制调整为5元（不含5元）', 'CNY')[0], 5.0
+        )
+        self.assertEqual(
+            _extract_amount('单日申购上限为10万美元', 'USD')[0], 100000.0
+        )
+
+    def test_share_class_table_scope(self):
+        text = (
+            '下属分级基金的交易代码 016056 016055 016058 016057 024237 '
+            '下属分级基金是否暂停大额申购、转换转入、定期定额投资业务否否否否是 '
+            '下属分级基金的限制申购金额（单位：元）100 '
+            '2025年11月18日起，投资人通过代销机构申购本基金I类份额单日累计金额'
+            '应不超过100元。'
+        )
+        fund_a = {'code': '016056', 'share_class': 'A', 'currency': 'USD'}
+        self.assertEqual(
+            parse_announcement('调整大额申购业务的公告', text, fund_a, '2025-11-18'),
+            [],
+        )
+        fund_i = {'code': '024237', 'share_class': 'I', 'currency': 'CNY'}
+        limits = parse_announcement(
+            '调整大额申购业务的公告', text, fund_i, '2025-11-18'
+        )
+        self.assertTrue(any(
+            item['channel_type'] == 'agency'
+            and item['status'] == 'amount_cap'
+            and item['amount'] == 100.0
+            for item in limits
         ))
 
     def test_channel_specific_parse(self):

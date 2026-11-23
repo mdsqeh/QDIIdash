@@ -20,6 +20,23 @@ NEGATIVE_TITLE_WORDS = (
 )
 DIRECT_WORDS = ('直销',)
 AGENCY_WORDS = ('代销', '第三方销售', '第三方机构', '销售机构')
+_DATE_IN_TITLE_RE = re.compile(r'\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日')
+
+
+def is_temporary_suspension(title, text=''):
+    """Holiday / non-trading-day suspensions are not quota changes."""
+    title = normalize_text(title)
+    text = normalize_text(text)
+    if '继续暂停' not in title and _DATE_IN_TITLE_RE.search(title):
+        if '提示性公告' in title and '暂停' in title:
+            return True
+        if '暂停申购' in title and '赎回' in title:
+            return True
+    combined = title + ' ' + text
+    if ('非交易日' in combined or '休市' in combined) and '暂停申购' in combined:
+        if '恢复' in combined:
+            return True
+    return False
 
 
 def normalize_text(value):
@@ -35,6 +52,8 @@ def normalize_text(value):
 def is_relevant_title(title):
     title = normalize_text(title)
     if not title:
+        return False
+    if is_temporary_suspension(title):
         return False
     if not any(word in title for word in POSITIVE_TITLE_WORDS):
         return False
@@ -61,6 +80,39 @@ def is_share_class_relevant(title, fund):
     if '人民币' in title and '美元' not in title and currency != 'CNY':
         return False
     return True
+
+
+_CODE_ROW_RE = re.compile(
+    r'(?:下属分级基金(?:的)?交易代码|下属分级基金交易代码|交易代码|基金代码)'
+    r'[：:]?\s*((?:\d{6}[\s、,，]*)+)'
+)
+_FLAG_HEADER_RE = r'是否(?:暂停|限制|恢复)[^。；;\n]{0,160}?'
+
+
+def _share_class_affected(text, fund):
+    """Return True/False when a share-class table explicitly covers the fund.
+
+    Some announcements list several share classes and mark only one as affected.
+    Without this check a limit for the I class would also be applied to A/C and
+    USD classes.
+    """
+    text = normalize_text(text)
+    code = str(fund.get('code') or '')
+    if not code:
+        return None
+    for code_match in _CODE_ROW_RE.finditer(text):
+        codes = re.findall(r'\d{6}', code_match.group(1))
+        if code not in codes:
+            continue
+        flag_pattern = re.compile(
+            _FLAG_HEADER_RE + r'((?:[是否][\s、,，]*){%d})' % len(codes)
+        )
+        window = text[code_match.end():code_match.end() + 240]
+        for flag_match in flag_pattern.finditer(window):
+            flags = re.findall(r'[是否]', flag_match.group(1))
+            if len(flags) == len(codes):
+                return flags[codes.index(code)] == '是'
+    return None
 
 
 def _split_sentences(text):
@@ -99,8 +151,18 @@ def _business_type(text):
 
 
 _AMOUNT_PATTERNS = (
-    re.compile(r'(?:不超过|不得超过|限额|限制金额|金额上限|上限|限额为|上限为)\s*(?:人民币)?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(万美元|万元|美元|元)?'),
-    re.compile(r'([0-9][0-9,]*(?:\.[0-9]+)?)\s*(万美元|万元|美元|元)\s*(?:以内|以下)'),
+    re.compile(
+        r'(?:不超过|不得超过|不高于|最多|限额为|限额|'
+        r'限制申购金额为|限制申购金额|限制金额为|限制金额|'
+        r'申购金额上限为|申购金额上限|金额上限为|金额上限|上限为|上限|'
+        r'限制为|限制至|调整为|调整至|调整到|设置为|设为)'
+        r'\s*(?:人民币)?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*'
+        r'(万美元|万元|美元|元)'
+    ),
+    re.compile(
+        r'([0-9][0-9,]*(?:\.[0-9]+)?)\s*(万美元|万元|美元|元)\s*'
+        r'(?:以内|以下)'
+    ),
 )
 
 
@@ -187,9 +249,14 @@ def parse_announcement(title, text, fund, published_at=None):
     """Return a list of channel-level limit dicts for one announcement."""
     title = normalize_text(title)
     text = normalize_text(text)
+    if is_temporary_suspension(title, text):
+        return []
     currency = fund.get('currency') or 'CNY'
     effective_from = _extract_effective_date(text or title, published_at)
     limits = []
+
+    if _share_class_affected(text, fund) is False:
+        return []
 
     # Primary path: split the PDF text into sentences and parse channel-specific
     # statements.  This handles announcements that set different limits for

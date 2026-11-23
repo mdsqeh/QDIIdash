@@ -385,7 +385,7 @@ def _do_fetch_incremental():
 
 # ── 日额度监控（高频检测） ─────────────────────────────────────
 
-WEBHOOK_URL = 'http://127.0.0.1:3000/webhook/cme'
+WEBHOOK_URL = 'https://b.atcap.top/webhook/cme'
 WEBHOOK_SECRET = 'addressTagPWD'
 
 

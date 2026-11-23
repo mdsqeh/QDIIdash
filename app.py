@@ -385,8 +385,8 @@ def _do_fetch_incremental():
 
 # ── 日额度监控（高频检测） ─────────────────────────────────────
 
-WEBHOOK_URL = 'https://b.atcap.top/webhook/cme'
-WEBHOOK_SECRET = 'addressTagPWD'
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '')
+WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', '')
 
 
 def _do_check_quota():

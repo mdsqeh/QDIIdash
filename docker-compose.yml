@@ -11,5 +11,7 @@ services:
       - WM_PASSWORD=${WM_PASSWORD:-}
       - WM_SECRET_KEY=${WM_SECRET_KEY:-}
       - WM_DB_PATH=${WM_DB_PATH:-}
+      - WEBHOOK_URL=${WEBHOOK_URL:-}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
     volumes:
       - ./data:/app/data

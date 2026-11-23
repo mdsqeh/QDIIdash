@@ -200,13 +200,30 @@ def build_fund_summary(conn, fund):
     if agency:
         note_rows += [r for r in agency_extra if r['business_type'] == agency['business_type']]
 
-    latest_announcement = conn.execute(
-        """SELECT published_at, title, source_url
-           FROM quota_announcement
-           WHERE fund_id = ?
-           ORDER BY published_at DESC, id DESC LIMIT 1""",
-        (fund['id'],),
-    ).fetchone()
+    current_rows = [r for r in (direct, agency, all_channel) if r]
+    current_announcements = [
+        r for r in current_rows if r['announcement_id'] and r['announcement_date']
+    ]
+    latest_announcement = None
+    if current_announcements:
+        row = max(
+            current_announcements,
+            key=lambda r: (r['announcement_date'], r['id']),
+        )
+        latest_announcement = {
+            'published_at': row['announcement_date'],
+            'title': row['announcement_title'],
+            'source_url': row['announcement_url'],
+        }
+    if latest_announcement is None:
+        row = conn.execute(
+            """SELECT published_at, title, source_url
+               FROM quota_announcement
+               WHERE fund_id = ?
+               ORDER BY published_at DESC, id DESC LIMIT 1""",
+            (fund['id'],),
+        ).fetchone()
+        latest_announcement = dict(row) if row else None
     source = conn.execute(
         """SELECT source_type, url, last_checked_at, last_success_at, last_error
            FROM quota_source WHERE fund_id = ?
@@ -214,13 +231,11 @@ def build_fund_summary(conn, fund):
         (fund['id'],),
     ).fetchone()
 
-    changed_today = bool(conn.execute(
-        """SELECT 1 FROM quota_announcement
-           WHERE fund_id = ? AND published_at = ? LIMIT 1""",
-        (fund['id'], _today()),
-    ).fetchone())
+    changed_today = any(
+        (r['announcement_date'] or '')[:10] == _today() for r in current_rows
+    )
     if not changed_today:
-        for row in rows:
+        for row in current_rows:
             if row['is_manual'] and _local_date(row['created_at']) == _today():
                 changed_today = True
                 break

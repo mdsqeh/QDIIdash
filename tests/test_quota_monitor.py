@@ -238,6 +238,15 @@ class QuotaServiceTests(unittest.TestCase):
         detail = get_fund_detail(self.conn, '015299')
         self.assertEqual(detail['fund']['direct']['status'], 'paused')
 
+    def test_last_announcement_uses_current_limit(self):
+        ann = self._add_announcement('调整申购限额', '2026-01-01')
+        self._add_limit(ann, 'all', 'amount_cap', 10, '2026-01-01')
+        self._add_announcement('仅 I 类份额调整，不适用本基金', '2026-02-01')
+
+        detail = get_fund_detail(self.conn, '015299')
+        self.assertEqual(detail['fund']['last_announcement_at'], '2026-01-01')
+        self.assertFalse(detail['fund']['changed_today'])
+
     def test_manual_override_and_clear(self):
         ann = self._add_announcement('调整申购限额', '2026-01-01')
         self._add_limit(ann, 'direct', 'amount_cap', 100, '2026-01-01')

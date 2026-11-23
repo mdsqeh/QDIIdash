@@ -64,6 +64,48 @@ COMPANIES = [
         'official_url': 'https://www.jsfund.cn',
         'announcement_url': 'https://www.jsfund.cn',
     },
+    {
+        'short_name': '华泰柏瑞基金',
+        'full_name': '华泰柏瑞基金管理有限公司',
+        'official_url': 'https://www.huatai-pb.com',
+        'announcement_url': 'https://www.huatai-pb.com',
+    },
+    {
+        'short_name': '天弘基金',
+        'full_name': '天弘基金管理有限公司',
+        'official_url': 'https://www.thfund.com.cn',
+        'announcement_url': 'https://www.thfund.com.cn',
+    },
+    {
+        'short_name': '宝盈基金',
+        'full_name': '宝盈基金管理有限公司',
+        'official_url': 'https://www.byfunds.com',
+        'announcement_url': 'https://www.byfunds.com',
+    },
+    {
+        'short_name': '建信基金',
+        'full_name': '建信基金管理有限责任公司',
+        'official_url': 'https://www.ccbfund.cn',
+        'announcement_url': 'https://www.ccbfund.cn',
+    },
+    {
+        'short_name': '招商基金',
+        'full_name': '招商基金管理有限公司',
+        'official_url': 'https://www.cmfchina.com',
+        'announcement_url': 'https://www.cmfchina.com',
+    },
+    {
+        'short_name': '摩根基金',
+        'full_name': '摩根基金管理（中国）有限公司',
+        'official_url': 'https://www.cifm.com',
+        'announcement_url': 'https://www.cifm.com',
+    },
+    {
+        'short_name': '汇添富基金',
+        'full_name': '汇添富基金管理股份有限公司',
+        'official_url': 'https://www.99fund.com',
+        'announcement_url': 'https://www.99fund.com',
+    },
 ]
 
 
@@ -271,7 +313,7 @@ def _now_iso():
 
 
 def init_quota_db(db_path):
-    """Create quota tables and seed the first 10 fund companies."""
+    """Create quota tables and seed the known fund companies."""
     with sqlite3.connect(db_path) as conn:
         conn.execute('PRAGMA journal_mode=WAL')
         conn.execute('PRAGMA busy_timeout=5000')

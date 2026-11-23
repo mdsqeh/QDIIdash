@@ -15,8 +15,10 @@ NEGATIVE_TITLE_WORDS = (
     '季度报告', '中期报告', '年度报告', '招募说明书', '产品资料概要',
     '净值', '分红', '停牌', '估值', '溢价', '折价', '基金经理',
     '基金合同', '托管协议', '份额发售', '上市交易', '新增申购赎回代办',
-    '代办', '申购赎回代办', '境外主要投资场所', '节假日', '投资组合',
-    '风险等级',
+    '代办', '申购赎回代办', '申购赎回代理', '代理机构',
+    '境外主要投资场所', '节假日', '投资组合',
+    '风险等级', '最低申购金额', '最低追加申购', '最低赎回', '最低持有',
+    '最低认购', '单笔最低',
 )
 DIRECT_WORDS = ('直销',)
 AGENCY_WORDS = ('代销', '第三方销售', '第三方机构', '销售机构')
@@ -87,6 +89,13 @@ _CODE_ROW_RE = re.compile(
     r'[：:]?\s*((?:\d{6}[\s、,，]*)+)'
 )
 _FLAG_HEADER_RE = r'是否(?:暂停|限制|恢复)[^。；;\n]{0,160}?'
+_TABLE_DASHES = '-—–－'
+_TABLE_ITEM = r'(?:[-—–－]|[\d,]+(?:\.\d+)?(?:\s*(?:万美元|美元|万元|元))?)'
+_TABLE_ITEM_RE = re.compile(_TABLE_ITEM)
+_TABLE_SEQUENCE_RE = re.compile(
+    r'\s*(?:[（(]\s*单位\s*[：:][^）)]*[）)]\s*)?'
+    r'(' + _TABLE_ITEM + r'(?:\s+' + _TABLE_ITEM + r')*)'
+)
 
 
 def _share_class_affected(text, fund):
@@ -113,6 +122,73 @@ def _share_class_affected(text, fund):
             if len(flags) == len(codes):
                 return flags[codes.index(code)] == '是'
     return None
+
+
+def _parse_table_item(item):
+    """Convert a table cell such as ``1 万美元`` or ``10 元`` to an amount."""
+    item = (item or '').strip()
+    if item in _TABLE_DASHES:
+        return None
+    match = re.match(r'([\d,]+(?:\.\d+)?)\s*(万美元|美元|万元|元)?', item)
+    if not match:
+        return None
+    try:
+        amount = float(match.group(1).replace(',', ''))
+    except ValueError:
+        return None
+    if '万' in (match.group(2) or ''):
+        amount *= 10000
+    return amount if amount > 0 else None
+
+
+def _code_table_scope(text, fund):
+    """Return ``(has_code_table, fund_code_is_listed)`` for the announcement."""
+    text = normalize_text(text)
+    code = str(fund.get('code') or '')
+    has_table = False
+    for code_match in _CODE_ROW_RE.finditer(text):
+        codes = re.findall(r'\d{6}', code_match.group(1))
+        if len(codes) < 2:
+            continue
+        has_table = True
+        if code in codes:
+            return True, True
+    return has_table, False
+
+
+def _table_limit_for_code(text, fund):
+    """Read a share-class limit table when it has one value per code.
+
+    Returns ``(found, amount, snippet)``.  ``found`` is True when the fund's
+    code appears in a code row and the following limit row has the same number
+    of values.  ``amount`` is None for a dash / zero, meaning that share class
+    is not covered by the table and should be treated as unrestricted.
+    """
+    text = normalize_text(text)
+    code = str(fund.get('code') or '')
+    if not code:
+        return False, None, ''
+    for code_match in _CODE_ROW_RE.finditer(text):
+        codes = re.findall(r'\d{6}', code_match.group(1))
+        if code not in codes:
+            continue
+        window = text[code_match.end():code_match.end() + 500]
+        label_match = re.search(
+            r'(?:限制申购金额|限制金额)[^0-9\-—–－]{0,80}', window
+        )
+        if not label_match:
+            continue
+        values_text = window[label_match.end():label_match.end() + 240]
+        sequence_match = _TABLE_SEQUENCE_RE.match(values_text)
+        if not sequence_match:
+            continue
+        tokens = _TABLE_ITEM_RE.findall(sequence_match.group(1))
+        if len(tokens) != len(codes):
+            continue
+        value = tokens[codes.index(code)]
+        snippet = window[max(0, label_match.start() - 120):label_match.end() + 200]
+        return True, _parse_table_item(value), snippet
+    return False, None, ''
 
 
 def _split_sentences(text):
@@ -187,22 +263,24 @@ def _extract_amount(text, currency='CNY'):
     return None, ''
 
 
-def _extract_effective_date(text, published_at):
+def _extract_effective_date(text, published_at, latest=False):
     text = normalize_text(text)
     patterns = (
         r'自\s*(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日',
         r'(\d{4})-(\d{2})-(\d{2})',
         r'(\d{4})/(\d{1,2})/(\d{1,2})',
     )
+    found = []
     for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
+        for match in re.finditer(pattern, text):
             try:
-                return datetime(
+                found.append(datetime(
                     int(match.group(1)), int(match.group(2)), int(match.group(3))
-                ).date().isoformat()
+                ).date().isoformat())
             except ValueError:
                 continue
+    if found:
+        return max(found) if latest else found[0]
     return (published_at or '')[:10] or None
 
 
@@ -213,6 +291,15 @@ def _status_in(text):
     if '恢复' in text or '正常' in text:
         return 'normal'
     return None
+
+
+def _downgrade_large_pause(status, text, amount):
+    """A large-purchase suspension without a parsed amount is not a full pause."""
+    if status == 'paused' and amount is None:
+        text = normalize_text(text)
+        if '大额' in text and '暂停申购' not in text:
+            return 'unknown'
+    return status
 
 
 def _confidence(channel_type, status):
@@ -251,12 +338,65 @@ def parse_announcement(title, text, fund, published_at=None):
     text = normalize_text(text)
     if is_temporary_suspension(title, text):
         return []
+    if not is_relevant_title(title):
+        return []
     currency = fund.get('currency') or 'CNY'
     effective_from = _extract_effective_date(text or title, published_at)
     limits = []
 
     if _share_class_affected(text, fund) is False:
         return []
+
+    # A full suspension is stronger than any amount mentioned elsewhere in the
+    # document.  "暂停大额申购" is different and is handled as a limit.
+    if '暂停申购' in title and '大额' not in title and '恢复' not in title:
+        title_channels = _channels_in(title)
+        if not title_channels:
+            title_channels = [('all', '全渠道')]
+        business_type = _business_type(title or text)
+        for channel_type, channel_name in title_channels:
+            _append_limit(
+                limits, fund, channel_type, channel_name, 'paused', None,
+                title if len(text) < 20 else text[:300], business_type,
+                effective_from,
+            )
+        return limits
+
+    # A share-class table scopes the announcement to the listed codes.  If the
+    # fund is absent, do not apply a generic sentence or another class's amount.
+    has_code_table, code_listed = _code_table_scope(text, fund)
+    if has_code_table and not code_listed:
+        title_channels = _channels_in(title)
+        if not title_channels:
+            title_channels = [('all', '全渠道')]
+        business_type = _business_type(title or text)
+        for channel_type, channel_name in title_channels:
+            _append_limit(
+                limits, fund, channel_type, channel_name, 'unknown', None,
+                text[:300], business_type, effective_from,
+            )
+        return limits
+
+    # Share-class tables are more precise than free-form sentences.  Use them
+    # when every code has a value and the announcement is a limit adjustment.
+    table_found, table_amount, table_text = _table_limit_for_code(text, fund)
+    if (
+        table_found
+        and any(word in title for word in ('大额', '限制', '限额', '调整'))
+        and not ('恢复' in title and '暂停' not in title)
+    ):
+        effective_from = _extract_effective_date(text, published_at, latest=True)
+        title_channels = _channels_in(title)
+        if not title_channels:
+            title_channels = [('all', '全渠道')]
+        business_type = _business_type(title or text)
+        status = 'amount_cap' if table_amount is not None else 'normal'
+        for channel_type, channel_name in title_channels:
+            _append_limit(
+                limits, fund, channel_type, channel_name, status,
+                table_amount, table_text, business_type, effective_from,
+            )
+        return limits
 
     # Primary path: split the PDF text into sentences and parse channel-specific
     # statements.  This handles announcements that set different limits for
@@ -269,6 +409,7 @@ def parse_announcement(title, text, fund, published_at=None):
         status = 'amount_cap' if amount is not None else _status_in(sentence)
         if status is None:
             continue
+        status = _downgrade_large_pause(status, sentence, amount)
         business_type = _business_type(sentence)
         for channel_type, channel_name in channels:
             _append_limit(
@@ -287,6 +428,7 @@ def parse_announcement(title, text, fund, published_at=None):
             status = _status_in(text)
         if status is None:
             status = 'unknown'
+        status = _downgrade_large_pause(status, title or text, amount)
         business_type = _business_type(title or text)
         for channel_type, channel_name in title_channels:
             _append_limit(

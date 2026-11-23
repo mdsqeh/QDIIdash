@@ -70,18 +70,25 @@ def parse_csrc_announcement_rows(html, fund, limit=30):
     return rows[:limit]
 
 
-def fetch_csrc_announcements(session, fund, fund_id=None, limit=30, timeout=30):
-    if not isinstance(fund, dict):
-        fund = dict(fund)
-    if not fund_id:
-        fund_id = fetch_csrc_fund_id(session, fund['code'], timeout=timeout)
+def fetch_csrc_fund_detail(session, fund_id, timeout=30):
+    """Fetch the raw CSRC announcement page for one parent fund id."""
     response = session.get(
         urljoin(CSRC_BASE, 'fund_detail_search.do'),
         params={'cFundCode': fund_id},
         timeout=timeout,
     )
     response.raise_for_status()
-    return fund_id, parse_csrc_announcement_rows(response.text, fund, limit=limit)
+    return response.text
+
+
+def fetch_csrc_announcements(session, fund, fund_id=None, limit=30, timeout=30, html=None):
+    if not isinstance(fund, dict):
+        fund = dict(fund)
+    if not fund_id:
+        fund_id = fetch_csrc_fund_id(session, fund['code'], timeout=timeout)
+    if html is None:
+        html = fetch_csrc_fund_detail(session, fund_id, timeout=timeout)
+    return fund_id, parse_csrc_announcement_rows(html, fund, limit=limit)
 
 
 def fetch_pdf_text(url, timeout=45, max_pages=20):

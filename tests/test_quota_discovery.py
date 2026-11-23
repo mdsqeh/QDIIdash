@@ -6,6 +6,8 @@ import tempfile
 import unittest
 
 from quota.discovery import (
+    company_name_from_fund,
+    company_short_name,
     is_nasdaq100,
     normalize_base_name,
     parse_currency,
@@ -61,12 +63,24 @@ class QuotaDiscoveryTests(unittest.TestCase):
             normalize_base_name('易方达纳斯达克100ETF联接(QDII-LOF)A(人民币)'),
             normalize_base_name('易方达纳斯达克100ETF联接(QDII-LOF)C(美元现汇)'),
         )
+        self.assertEqual(
+            company_name_from_fund('南方纳斯达克100指数发起(QDII)A'), '南方'
+        )
+        self.assertEqual(
+            company_name_from_fund('华泰柏瑞纳斯达克100ETF发起式联接(QDII)A'),
+            '华泰柏瑞',
+        )
+        self.assertEqual(
+            company_name_from_fund('华夏基金纳斯达克100ETF联接(QDII)A'), '华夏'
+        )
+        self.assertEqual(company_name_from_fund('纳斯达克100ETF大成'), '')
+        self.assertEqual(company_short_name('华泰柏瑞'), '华泰柏瑞基金')
 
     def test_sync_adds_all_share_classes_and_keeps_manual_limit(self):
         result = sync_nasdaq100_funds(self.db_path)
         self.assertFalse(result['skipped'])
-        self.assertEqual(result['discovered'], 7)
-        self.assertEqual(result['inserted'], 3)
+        self.assertEqual(result['discovered'], 8)
+        self.assertEqual(result['inserted'], 4)
         self.assertEqual(result['updated'], 4)
 
         conn = connect(self.db_path)
@@ -77,7 +91,10 @@ class QuotaDiscoveryTests(unittest.TestCase):
         by_code = {row['code']: row for row in rows}
         self.assertEqual(
             set(by_code),
-            {'016452', '016453', '021000', '270042', '000055', '006480', '019441'},
+            {
+                '016452', '016453', '021000', '270042', '000055',
+                '006480', '019441', '900001',
+            },
         )
         self.assertEqual(by_code['016453']['share_class'], 'C')
         self.assertEqual(by_code['000055']['currency'], 'USD')
@@ -85,8 +102,14 @@ class QuotaDiscoveryTests(unittest.TestCase):
         self.assertEqual(by_code['016453']['csrc_code'], '016452')
         self.assertEqual(by_code['006480']['csrc_code'], '270042')
         self.assertNotIn('159513', by_code)
-        self.assertNotIn('900001', by_code)
         self.assertNotIn('900002', by_code)
+
+        company = conn.execute(
+            """SELECT c.short_name FROM quota_fund f
+               JOIN quota_company c ON c.id = f.company_id
+               WHERE f.code = '900001'"""
+        ).fetchone()
+        self.assertEqual(company['short_name'], '招商基金')
 
         manual = conn.execute(
             """SELECT l.amount FROM quota_limit l
@@ -98,9 +121,42 @@ class QuotaDiscoveryTests(unittest.TestCase):
         conn.close()
 
         again = sync_nasdaq100_funds(self.db_path)
-        self.assertEqual(again['discovered'], 7)
+        self.assertEqual(again['discovered'], 8)
         self.assertEqual(again['inserted'], 0)
-        self.assertEqual(again['updated'], 7)
+        self.assertEqual(again['updated'], 8)
+
+    def test_sync_creates_company_for_new_fund(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                'INSERT INTO funds (code, name, ftype, market, upd_date) '
+                'VALUES (?, ?, ?, ?, ?)',
+                (
+                    '900003', '新锐纳斯达克100指数(QDII)A',
+                    '指数型-海外股票', '场外', '2026-01-01',
+                ),
+            )
+
+        result = sync_nasdaq100_funds(self.db_path)
+        self.assertEqual(result['discovered'], 9)
+        self.assertEqual(result['inserted'], 5)
+        self.assertEqual(result['companies_created'], 1)
+
+        conn = connect(self.db_path)
+        company = conn.execute(
+            "SELECT * FROM quota_company WHERE short_name = '新锐基金'"
+        ).fetchone()
+        self.assertIsNotNone(company)
+        self.assertEqual(company['full_name'], '新锐基金')
+        fund = conn.execute(
+            "SELECT * FROM quota_fund WHERE code = '900003'"
+        ).fetchone()
+        self.assertEqual(fund['company_id'], company['id'])
+        self.assertEqual(fund['csrc_code'], '900003')
+        conn.close()
+
+        again = sync_nasdaq100_funds(self.db_path)
+        self.assertEqual(again['companies_created'], 0)
+        self.assertEqual(again['inserted'], 0)
 
 
 if __name__ == '__main__':

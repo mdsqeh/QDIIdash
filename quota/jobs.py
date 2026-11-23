@@ -9,6 +9,7 @@ from .schema import init_quota_db
 from .sources import (
     CSRC_INDEX,
     fetch_csrc_announcements,
+    fetch_csrc_fund_detail,
     fetch_csrc_fund_id,
     fetch_pdf_text,
     make_session,
@@ -52,6 +53,12 @@ def run_quota_check(db_path):
     try:
         try:
             sync_info = sync_nasdaq100_funds(db_path)
+            if sync_info.get('inserted') or sync_info.get('companies_created'):
+                print(
+                    f"🆕 额度清单新增 {sync_info.get('inserted', 0)} 只基金，"
+                    f"{sync_info.get('companies_created', 0)} 家公司",
+                    flush=True,
+                )
         except Exception as exc:
             errors.append(f'list_sync: {exc}')
         now = _now_iso()
@@ -74,6 +81,9 @@ def run_quota_check(db_path):
                ORDER BY f.id"""
         ).fetchall()
         session = make_session()
+        fund_id_cache = {}
+        detail_cache = {}
+        pdf_cache = {}
         for fund in funds:
             source = _ensure_source(conn, fund['id'])
             checked_at = _now_iso()
@@ -82,9 +92,18 @@ def run_quota_check(db_path):
                 external_id = source['external_id']
                 if not external_id:
                     lookup_code = fund['csrc_code'] or fund['code']
-                    external_id = fetch_csrc_fund_id(session, lookup_code)
+                    if lookup_code not in fund_id_cache:
+                        fund_id_cache[lookup_code] = fetch_csrc_fund_id(
+                            session, lookup_code,
+                        )
+                    external_id = fund_id_cache[lookup_code]
+                if external_id not in detail_cache:
+                    detail_cache[external_id] = fetch_csrc_fund_detail(
+                        session, external_id,
+                    )
                 external_id, announcements = fetch_csrc_announcements(
                     session, fund, fund_id=external_id, limit=30,
+                    html=detail_cache[external_id],
                 )
                 conn.execute(
                     """UPDATE quota_source
@@ -102,7 +121,11 @@ def run_quota_check(db_path):
                     ).fetchone()
                     if exists:
                         continue
-                    text = fetch_pdf_text(ann['source_url'])
+                    if ann['source_url'] not in pdf_cache:
+                        pdf_cache[ann['source_url']] = fetch_pdf_text(
+                            ann['source_url'],
+                        )
+                    text = pdf_cache[ann['source_url']]
                     limits = parse_announcement(
                         ann['title'], text, dict(fund), ann.get('published_at'),
                     )

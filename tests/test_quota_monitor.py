@@ -28,6 +28,22 @@ class QuotaParserTests(unittest.TestCase):
         self.assertFalse(is_relevant_title('关于嘉实纳斯达克100ETF联接（QDII）暂停赎回业务的公告'))
         self.assertFalse(is_relevant_title('华夏纳斯达克100ETF联接（QDII）2026年第3季度报告'))
         self.assertFalse(is_relevant_title('关于旗下部分基金新增华源证券为申购、赎回代办券商的公告'))
+        self.assertFalse(is_relevant_title(
+            '天弘基金管理有限公司关于调整旗下部分基金份额的最低申购金额限制和最低赎回份额、最低持有份额限制的公告'
+        ))
+        self.assertFalse(is_relevant_title(
+            '关于新增华泰证券股份有限公司为建信旗下部分交易型开放式指数证券投资基金申购赎回代理机构的公告'
+        ))
+
+    def test_agency_addition_is_not_a_limit(self):
+        fund = {'code': '012751', 'share_class': 'A', 'currency': 'USD'}
+        limits = parse_announcement(
+            '关于新增华泰证券股份有限公司为建信旗下部分交易型开放式指数证券投资基金申购赎回代理机构的公告',
+            '自2026年11月4日起，以上证券公司将作为下述产品的申购赎回代理机构。',
+            fund,
+            '2026-11-04',
+        )
+        self.assertEqual(limits, [])
 
     def test_share_class_filter(self):
         fund_a = [item for item in FUNDS if item['code'] == '015299'][0]
@@ -116,6 +132,116 @@ class QuotaParserTests(unittest.TestCase):
             and item['amount'] == 100.0
             for item in limits
         ))
+
+    def test_share_class_limit_table(self):
+        text = (
+            '下属分级基金的交易代码 012751 539001 012753 012752 023422 '
+            '该分级基金是否暂停大额申购、定期定额投资是是是是是 '
+            '下属分级基金的限制申购金额（单位：人民币元） - 10,000.00 - 10,000.00 - '
+            '自2026年8月13日起，对人民币份额的申购业务进行限制。'
+        )
+        title = '建信纳斯达克100指数型证券投资基金（QDII）在直销渠道暂停大额申购、定期定额投资公告'
+        fund_cny = {'code': '539001', 'share_class': 'A', 'currency': 'CNY'}
+        limits = parse_announcement(title, text, fund_cny, '2026-08-12')
+        self.assertEqual(len(limits), 1)
+        self.assertEqual(limits[0]['channel_type'], 'direct')
+        self.assertEqual(limits[0]['status'], 'amount_cap')
+        self.assertEqual(limits[0]['amount'], 10000.0)
+        self.assertEqual(limits[0]['effective_from'], '2026-08-13')
+        fund_usd = {'code': '012751', 'share_class': 'A', 'currency': 'USD'}
+        limits = parse_announcement(title, text, fund_usd, '2026-08-12')
+        self.assertEqual(len(limits), 1)
+        self.assertEqual(limits[0]['channel_type'], 'direct')
+        self.assertEqual(limits[0]['status'], 'normal')
+        self.assertIsNone(limits[0]['amount'])
+
+        text = (
+            '下属基金份额的交易代码 018966 018967 018969 018968 021773 '
+            '该基金份额是否暂停上述业务是是是是是 '
+            '金额单位人民币元人民币元美元美元人民币元 '
+            '下属基金份额的限制申购金额 10.00 10.00 2.00 2.00 10.00 '
+            '自2026年09月14日起，限制金额为1000人民币元。'
+            '自2026年09月22日起，单日累计申购金额不应超过10人民币元。'
+        )
+        title = '关于汇添富纳斯达克100ETF发起式联接（QDII）调整直销机构大额申购业务限制金额的公告'
+        fund_cny = {'code': '018966', 'share_class': 'A', 'currency': 'CNY'}
+        limits = parse_announcement(title, text, fund_cny, '2026-09-22')
+        self.assertEqual(limits[0]['channel_type'], 'direct')
+        self.assertEqual(limits[0]['amount'], 10.0)
+        self.assertEqual(limits[0]['effective_from'], '2026-09-22')
+        self.assertFalse(any(item['channel_type'] == 'agency' for item in limits))
+        fund_usd = {'code': '018968', 'share_class': 'A', 'currency': 'USD'}
+        limits = parse_announcement(title, text, fund_usd, '2026-09-22')
+        self.assertEqual(limits[0]['amount'], 2.0)
+
+    def test_large_pause_without_amount_is_unknown(self):
+        fund = {'code': '012751', 'share_class': 'A', 'currency': 'USD'}
+        limits = parse_announcement(
+            '暂停大额申购公告',
+            '自2026年8月13日起暂停大额申购、定期定额投资业务。',
+            fund,
+            '2026-08-12',
+        )
+        self.assertEqual(limits[0]['status'], 'unknown')
+
+    def test_full_pause_beats_amount_in_text(self):
+        fund = {'code': '018043', 'share_class': 'A', 'currency': 'CNY'}
+        limits = parse_announcement(
+            '天弘纳斯达克100指数型发起式证券投资基金（QDII）A类基金份额、C类基金份额暂停申购及定期定额投资业务的公告',
+            '自2026年9月21日起暂停申购。此前单日累计申购金额不超过100元。',
+            fund,
+            '2026-09-18',
+        )
+        self.assertEqual(limits[0]['status'], 'paused')
+        self.assertIsNone(limits[0]['amount'])
+
+    def test_share_class_table_with_units(self):
+        text = (
+            '下属分级基金的交易代码 012751 539001 012753 012752 023422 '
+            '该分级基金是否暂停大额申购、定期定额投资是是是是是 '
+            '下属分级基金的限制申购金额 1 万美元 10 元 1 万美元 10 元 10 元 '
+            '自2026年8月20日起，对人民币份额和美元份额的申购业务进行限制。'
+        )
+        title = '建信纳斯达克100指数型证券投资基金（QDII）暂停大额申购、定期定额投资公告'
+        fund_usd = {'code': '012751', 'share_class': 'A', 'currency': 'USD'}
+        limits = parse_announcement(title, text, fund_usd, '2026-08-19')
+        self.assertEqual(limits[0]['channel_type'], 'all')
+        self.assertEqual(limits[0]['amount'], 10000.0)
+        self.assertEqual(limits[0]['effective_from'], '2026-08-20')
+        fund_cny = {'code': '539001', 'share_class': 'A', 'currency': 'CNY'}
+        limits = parse_announcement(title, text, fund_cny, '2026-08-19')
+        self.assertEqual(limits[0]['channel_type'], 'all')
+        self.assertEqual(limits[0]['amount'], 10.0)
+
+    def test_code_table_scopes_share_classes(self):
+        text = (
+            '下属分级基金的交易代码 019736 019737 '
+            '该分级基金是否暂停大额申购、定期定额投资是是 '
+            '下属分级基金的限制申购金额（单位：人民币元） 10.00 10.00 '
+            '自2026年9月28日起，本基金每一类基金份额单日申购限制金额调整为10元。'
+        )
+        title = '宝盈纳斯达克100指数型发起式证券投资基金（QDII）调整大额申购、定期定额投资业务限制金额的公告'
+        fund_cny = {'code': '019736', 'share_class': 'A', 'currency': 'CNY'}
+        limits = parse_announcement(title, text, fund_cny, '2026-09-24')
+        self.assertEqual(limits[0]['status'], 'amount_cap')
+        self.assertEqual(limits[0]['amount'], 10.0)
+        fund_usd = {'code': '019738', 'share_class': 'A', 'currency': 'USD'}
+        limits = parse_announcement(title, text, fund_usd, '2026-09-24')
+        self.assertEqual(limits[0]['status'], 'unknown')
+        self.assertIsNone(limits[0]['amount'])
+
+    def test_single_fund_code_is_not_a_share_class_table(self):
+        text = (
+            '本基金（基金代码：019441）取消总规模上限。'
+            '本基金A类份额和C类份额代销渠道单日累计申购金额限制为10元；'
+            '直销渠道单日累计申购金额限制为100元。'
+        )
+        title = '关于万家纳斯达克100指数型发起式证券投资基金（QDII）取消总规模上限的公告'
+        fund_c = {'code': '019442', 'share_class': 'C', 'currency': 'CNY'}
+        limits = parse_announcement(title, text, fund_c, '2026-09-28')
+        by_channel = {item['channel_type']: item for item in limits}
+        self.assertEqual(by_channel['agency']['amount'], 10.0)
+        self.assertEqual(by_channel['direct']['amount'], 100.0)
 
     def test_channel_specific_parse(self):
         fund = [item for item in FUNDS if item['code'] == '015299'][0]

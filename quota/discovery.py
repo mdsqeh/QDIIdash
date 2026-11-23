@@ -12,6 +12,7 @@ from .schema import init_quota_db
 
 
 SHARE_CLASS_RE = re.compile(r'([ACIDE])(?=类|份额|人民币|美元|现汇|现钞|\(|（|$)')
+NASDAQ_RE = re.compile(r'(?i)(纳斯达克|nasdaq)')
 
 
 def _now_iso():
@@ -28,13 +29,36 @@ def company_prefix(short_name):
     return short_name[:-2] if short_name.endswith('基金') else short_name
 
 
+def company_name_from_fund(name):
+    """Return the company short name before 纳斯达克/Nasdaq, without 基金."""
+    text = str(name or '')
+    match = NASDAQ_RE.search(text)
+    if not match:
+        return ''
+    prefix = text[:match.start()].strip()
+    prefix = re.sub(r'[（(].*$', '', prefix).strip()
+    prefix = re.sub(r'\s+', '', prefix)
+    if prefix.endswith('基金'):
+        prefix = prefix[:-2]
+    return prefix
+
+
+def company_short_name(prefix):
+    prefix = str(prefix or '').strip()
+    if not prefix:
+        return ''
+    if prefix.endswith('基金'):
+        return prefix
+    return f'{prefix}基金'
+
+
 def match_company(name, companies):
-    for company in sorted(
-        companies,
-        key=lambda item: len(company_prefix(item['short_name'])),
-        reverse=True,
-    ):
-        if name.startswith(company_prefix(company['short_name'])):
+    """Match by exact prefix so 南方东英 is not grouped under 南方."""
+    prefix = company_name_from_fund(name)
+    if not prefix:
+        return None
+    for company in companies:
+        if company_prefix(company['short_name']) == prefix:
             return company
     return None
 
@@ -57,10 +81,11 @@ def normalize_base_name(name):
 
 
 def discover_from_funds(conn):
-    """Return Nasdaq-100 OTC funds for the seeded companies.
+    """Return Nasdaq-100 OTC funds grouped by company + base fund name.
 
-    The result is grouped by company + base fund name so share classes can
-    reuse one CSRC parent fund id.
+    Known companies are matched by exact name prefix.  Funds from an unknown
+    company are returned with ``company_id=None`` and a synthesized company
+    name; ``sync_nasdaq100_funds`` creates the company row before upserting.
     """
     try:
         companies = [dict(row) for row in conn.execute(
@@ -78,13 +103,23 @@ def discover_from_funds(conn):
             continue
         if not is_nasdaq100(row['name'], row['ftype']):
             continue
+        prefix = company_name_from_fund(row['name']) or '未知'
         company = match_company(row['name'], companies)
         if company is None:
-            continue
+            company_id = None
+            company_short = company_short_name(prefix)
+            company_full = company_short
+            company_url = None
+        else:
+            company_id = company['id']
+            company_short = company['short_name']
+            company_full = company['full_name']
+            company_url = company['official_url']
         items.append({
-            'company_id': company['id'],
-            'company_short_name': company['short_name'],
-            'company_url': company['official_url'],
+            'company_id': company_id,
+            'company_short_name': company_short,
+            'company_full_name': company_full,
+            'company_url': company_url,
             'code': str(row['code']),
             'name': row['name'],
             'share_class': parse_share_class(row['name']),
@@ -94,7 +129,9 @@ def discover_from_funds(conn):
 
     groups = {}
     for item in items:
-        groups.setdefault((item['company_id'], item['base_name']), []).append(item)
+        groups.setdefault(
+            (item['company_short_name'], item['base_name']), []
+        ).append(item)
     for group in groups.values():
         parent = next(
             (
@@ -126,11 +163,38 @@ def sync_nasdaq100_funds(db_path):
                 'inserted': 0,
                 'updated': 0,
                 'disabled': 0,
+                'companies_created': 0,
                 'skipped': True,
                 'source_count': source_count,
             }
 
         now = _now_iso()
+        company_ids = {}
+        companies_created = 0
+        for item in items:
+            short_name = item['company_short_name']
+            if short_name not in company_ids:
+                row = conn.execute(
+                    'SELECT id FROM quota_company WHERE short_name = ?',
+                    (short_name,),
+                ).fetchone()
+                if row:
+                    company_ids[short_name] = row['id']
+                else:
+                    cur = conn.execute(
+                        """INSERT INTO quota_company
+                           (short_name, full_name, official_url, announcement_url,
+                            enabled, created_at)
+                           VALUES (?, ?, ?, NULL, 1, ?)""",
+                        (
+                            short_name, item['company_full_name'] or short_name,
+                            item['company_url'], now,
+                        ),
+                    )
+                    company_ids[short_name] = cur.lastrowid
+                    companies_created += 1
+            item['company_id'] = company_ids[short_name]
+
         inserted = 0
         updated = 0
         for item in items:
@@ -180,6 +244,7 @@ def sync_nasdaq100_funds(db_path):
             'inserted': inserted,
             'updated': updated,
             'disabled': disabled,
+            'companies_created': companies_created,
             'source_count': source_count,
             'skipped': False,
         }

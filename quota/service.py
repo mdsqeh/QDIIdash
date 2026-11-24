@@ -265,7 +265,7 @@ def build_fund_summary(conn, fund):
 
 
 def _status_matches(summary, status):
-    channels = [summary.get('direct'), summary.get('agency')]
+    channels = [summary.get('direct'), summary.get('agency'), summary.get('all')]
     if status == 'limited':
         return any(c and c['status'] == 'amount_cap' for c in channels)
     if status == 'paused':
@@ -313,7 +313,8 @@ def list_fund_summaries(conn, search='', company='', status='', changed_today=Fa
         ),
         'paused': sum(
             1 for item in summaries if any(
-                c and c['status'] == 'paused' for c in (item['direct'], item['agency'])
+                c and c['status'] == 'paused'
+                for c in (item['direct'], item['agency'], item['all'])
             )
         ),
         'changed_today': sum(1 for item in summaries if item['changed_today']),

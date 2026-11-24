@@ -13,7 +13,12 @@ from quota.parser import (
     parse_announcement,
 )
 from quota.schema import FUNDS, init_quota_db
-from quota.service import connect, get_fund_detail, set_manual_limit
+from quota.service import (
+    connect,
+    get_fund_detail,
+    list_fund_summaries,
+    set_manual_limit,
+)
 
 
 def _now():
@@ -372,6 +377,26 @@ class QuotaServiceTests(unittest.TestCase):
         detail = get_fund_detail(self.conn, '015299')
         self.assertEqual(detail['fund']['last_announcement_at'], '2026-01-01')
         self.assertFalse(detail['fund']['changed_today'])
+
+    def test_all_channel_limit_is_included_in_limited_filter(self):
+        ann = self._add_announcement('调整申购限额', '2026-01-01')
+        self._add_limit(ann, 'all', 'amount_cap', 200, '2026-01-01')
+
+        filtered, summary, _ = list_fund_summaries(
+            self.conn, search='015299', status='limited'
+        )
+        self.assertEqual([item['code'] for item in filtered], ['015299'])
+        self.assertEqual(summary['paused'], 0)
+
+    def test_all_channel_pause_is_included_in_paused_filter_and_summary(self):
+        ann = self._add_announcement('暂停申购', '2026-01-01')
+        self._add_limit(ann, 'all', 'paused', None, '2026-01-01')
+
+        filtered, summary, _ = list_fund_summaries(
+            self.conn, search='015299', status='paused'
+        )
+        self.assertEqual([item['code'] for item in filtered], ['015299'])
+        self.assertEqual(summary['paused'], 1)
 
     def test_manual_override_and_clear(self):
         ann = self._add_announcement('调整申购限额', '2026-01-01')

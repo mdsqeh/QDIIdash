@@ -312,33 +312,42 @@ class QuotaServiceTests(unittest.TestCase):
         gc.collect()
         self._tmp.cleanup()
 
-    def _add_announcement(self, title, date='2026-01-01'):
+    def _add_announcement_for(self, fund, title, date='2026-01-01'):
         cur = self.conn.execute(
             """INSERT INTO quota_announcement
                (fund_id, source_type, source_url, external_id, title, published_at,
                 fetched_at, text, parse_status, parse_confidence, is_read, created_at)
                VALUES (?, 'csrc', 'http://example.test/a', ?, ?, ?, ?, '', 'parsed',
                        0.9, 0, ?)""",
-            (self.fund['id'], title, title, date, _now(), _now()),
+            (fund['id'], title, title, date, _now(), _now()),
         )
         self.conn.commit()
         return cur.lastrowid
 
-    def _add_limit(self, announcement_id, channel, status, amount, effective):
+    def _add_announcement(self, title, date='2026-01-01'):
+        return self._add_announcement_for(self.fund, title, date)
+
+    def _add_limit_for(self, fund, announcement_id, channel, status, amount,
+                       effective, currency='CNY'):
         self.conn.execute(
             """INSERT INTO quota_limit
                (fund_id, announcement_id, channel_type, channel_name, status, amount,
                 currency, limit_text, business_type, effective_from, effective_to,
                 confidence, is_manual, note, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'CNY', '', 'subscription', ?, NULL,
+               VALUES (?, ?, ?, ?, ?, ?, ?, '', 'subscription', ?, NULL,
                        0.9, 0, NULL, ?, ?)""",
             (
-                self.fund['id'], announcement_id, channel,
+                fund['id'], announcement_id, channel,
                 '直销' if channel == 'direct' else ('代销机构' if channel == 'agency' else '全渠道'),
-                status, amount, effective, _now(), _now(),
+                status, amount, currency, effective, _now(), _now(),
             ),
         )
         self.conn.commit()
+
+    def _add_limit(self, announcement_id, channel, status, amount, effective):
+        self._add_limit_for(
+            self.fund, announcement_id, channel, status, amount, effective,
+        )
 
     def test_i_share_uses_parent_csrc_code_and_default_direct_channel(self):
         row = self.conn.execute(
@@ -412,6 +421,51 @@ class QuotaServiceTests(unittest.TestCase):
         )
         self.assertEqual([item['code'] for item in filtered], ['015299'])
         self.assertEqual(summary['paused'], 1)
+
+    def test_purchasable_summary_uses_max_channel_and_splits_currency(self):
+        ann = self._add_announcement('调整申购限额', '2026-01-01')
+        self._add_limit(ann, 'direct', 'amount_cap', 100, '2026-01-01')
+        self._add_limit(ann, 'agency', 'amount_cap', 5, '2026-01-01')
+
+        fund_i = self.conn.execute(
+            "SELECT * FROM quota_fund WHERE code = '021000'"
+        ).fetchone()
+        ann_i = self._add_announcement_for(fund_i, '调整申购限额', '2026-01-01')
+        self._add_limit_for(fund_i, ann_i, 'direct', 'amount_cap', 200, '2026-01-01')
+
+        self.conn.execute(
+            """INSERT INTO quota_fund
+               (company_id, code, name, share_class, currency, created_at)
+               VALUES (?, 'TESTUSD', '测试美元基金', 'A', 'USD', ?)""",
+            (self.fund['company_id'], _now()),
+        )
+        self.conn.commit()
+        fund_usd = self.conn.execute(
+            "SELECT * FROM quota_fund WHERE code = 'TESTUSD'"
+        ).fetchone()
+        ann_usd = self._add_announcement_for(fund_usd, '调整申购限额', '2026-01-01')
+        self._add_limit_for(
+            fund_usd, ann_usd, 'all', 'amount_cap', 1, '2026-01-01',
+            currency='USD',
+        )
+
+        _, summary, _ = list_fund_summaries(self.conn)
+        cny = summary['purchasable']['CNY']
+        usd = summary['purchasable']['USD']
+        self.assertEqual(cny['amount'], 300.0)
+        self.assertEqual(cny['limited_count'], 2)
+        self.assertEqual(usd['amount'], 1.0)
+        self.assertEqual(usd['limited_count'], 1)
+
+    def test_purchasable_summary_counts_unlimited_separately(self):
+        ann = self._add_announcement('恢复申购', '2026-01-01')
+        self._add_limit(ann, 'all', 'normal', None, '2026-01-01')
+
+        _, summary, _ = list_fund_summaries(self.conn)
+        cny = summary['purchasable']['CNY']
+        self.assertEqual(cny['amount'], 0.0)
+        self.assertEqual(cny['unlimited_count'], 1)
+        self.assertEqual(cny['limited_count'], 0)
 
     def test_manual_override_and_clear(self):
         ann = self._add_announcement('调整申购限额', '2026-01-01')

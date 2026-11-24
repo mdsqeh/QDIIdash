@@ -424,6 +424,20 @@ keywords: QDII基金, 折溢价率, 基金监控, 日额度, 纳斯达克100, �
     }
     .quota-monitor-stat .num { font-family: var(--font-display); font-size: 1.05rem; font-weight: 700; color: var(--accent); }
     .quota-monitor-stat .lbl { color: var(--text-muted); font-size: 0.7rem; margin-top: 2px; }
+    .quota-purchasable { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-bottom: 10px; }
+    .quota-purchasable-card {
+        padding: 12px 14px; border: 1px solid var(--surface-border);
+        border-left: 3px solid var(--accent); border-radius: var(--radius); background: var(--surface);
+    }
+    .quota-purchasable-card.usd { border-left-color: var(--green); }
+    .quota-purchasable-card .label { color: var(--text-muted); font-size: 0.72rem; }
+    .quota-purchasable-card .value {
+        margin-top: 3px; color: var(--accent); font-family: var(--font-display);
+        font-size: 1.45rem; font-weight: 700; letter-spacing: -0.02em;
+    }
+    .quota-purchasable-card.usd .value { color: var(--green); }
+    .quota-purchasable-card .value .unit { margin-left: 3px; color: var(--text-muted); font-family: var(--font-body); font-size: 0.72rem; font-weight: 500; }
+    .quota-purchasable-card .meta { margin-top: 4px; color: var(--text-muted); font-size: 0.68rem; }
     .quota-monitor-actions { display: flex; gap: 8px; flex-wrap: wrap; }
     .quota-monitor-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .quota-monitor-toolbar input[type="text"], .quota-monitor-toolbar select {
@@ -611,6 +625,7 @@ keywords: QDII基金, 折溢价率, 基金监控, 日额度, 纳斯达克100, �
     </div>
 
     <div class="quota-panel" id="quotaPanel">
+        <div class="quota-purchasable" id="quotaPurchasable"></div>
         <div class="quota-monitor-head">
             <div class="quota-monitor-stats" id="quotaMonitorStats"></div>
             <div class="quota-monitor-actions">
@@ -1828,6 +1843,30 @@ function quotaChannelHtml(ch, details, fallbackAll) {
         (sub ? `<div class="quota-channel-sub">${escapeHtml(sub)}</div>` : '') + note;
 }
 
+function renderQuotaPurchasable(summary) {
+    const el = document.getElementById('quotaPurchasable');
+    if (!el || !summary || !summary.purchasable) return;
+    const cards = [
+        { key: 'CNY', label: '人民币可购额度合计', unit: '元' },
+        { key: 'USD', label: '美元可购额度合计', unit: '美元' },
+    ];
+    el.innerHTML = cards.map(card => {
+        const bucket = summary.purchasable[card.key] || {};
+        const bits = [];
+        if (bucket.limited_count) bits.push(`${bucket.limited_count} 只有限额`);
+        if (bucket.unlimited_count) bits.push(`${bucket.unlimited_count} 只不限`);
+        if (bucket.paused_count) bits.push(`${bucket.paused_count} 只暂停`);
+        if (bucket.unknown_count) bits.push(`${bucket.unknown_count} 只未知`);
+        if (bucket.no_data_count) bits.push(`${bucket.no_data_count} 只未披露`);
+        const meta = bits.length ? bits.join(' · ') : '暂无数据';
+        return `<div class="quota-purchasable-card ${card.key.toLowerCase()}" title="每只份额取直销 / 第三方 / 全渠道最大额度后按币种累加">
+            <div class="label">${card.label}</div>
+            <div class="value">${escapeHtml(bucket.amount_text || '0')}<span class="unit">${card.unit}</span></div>
+            <div class="meta">${escapeHtml(meta)}</div>
+        </div>`;
+    }).join('');
+}
+
 function renderQuotaMonitorStats(summary) {
     const el = document.getElementById('quotaMonitorStats');
     if (!el || !summary) return;
@@ -1896,6 +1935,7 @@ async function loadQuotaMonitor() {
         const resp = await fetch('/api/quota/monitor/funds?' + params.toString());
         if (!resp.ok) throw new Error('load failed');
         const data = await resp.json();
+        renderQuotaPurchasable(data.summary);
         renderQuotaMonitorStats(data.summary);
         renderQuotaMonitor(data.funds || []);
         const totalEl = document.getElementById('totalCount');

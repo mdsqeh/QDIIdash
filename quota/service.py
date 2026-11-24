@@ -277,6 +277,53 @@ def _status_matches(summary, status):
     return True
 
 
+def _purchasable_summary(summaries):
+    buckets = {
+        currency: {
+            'amount': 0.0,
+            'amount_text': '',
+            'total_count': 0,
+            'limited_count': 0,
+            'paused_count': 0,
+            'unknown_count': 0,
+            'unlimited_count': 0,
+            'no_data_count': 0,
+        }
+        for currency in ('CNY', 'USD')
+    }
+    for item in summaries:
+        currency = (item.get('currency') or 'CNY').upper()
+        bucket = buckets.get(currency)
+        if bucket is None:
+            continue
+        bucket['total_count'] += 1
+
+        channels = [
+            c for c in (item.get('direct'), item.get('agency'), item.get('all'))
+            if c
+        ]
+        statuses = {c['status'] for c in channels}
+        amounts = [
+            c['amount'] for c in channels
+            if c['status'] == 'amount_cap' and c.get('amount') is not None
+        ]
+        if 'normal' in statuses:
+            bucket['unlimited_count'] += 1
+        elif amounts:
+            bucket['amount'] += max(amounts)
+            bucket['limited_count'] += 1
+        elif 'paused' in statuses:
+            bucket['paused_count'] += 1
+        elif 'unknown' in statuses:
+            bucket['unknown_count'] += 1
+        else:
+            bucket['no_data_count'] += 1
+
+    for bucket in buckets.values():
+        bucket['amount_text'] = _format_amount(bucket['amount'])
+    return buckets
+
+
 def list_fund_summaries(conn, search='', company='', status='', changed_today=False):
     summaries = [build_fund_summary(conn, fund) for fund in _fund_rows(conn)]
     search = (search or '').strip().lower()
@@ -318,6 +365,7 @@ def list_fund_summaries(conn, search='', company='', status='', changed_today=Fa
             )
         ),
         'changed_today': sum(1 for item in summaries if item['changed_today']),
+        'purchasable': _purchasable_summary(summaries),
         'last_check': max(
             (item['last_checked_at'] for item in summaries if item['last_checked_at']),
             default=None,

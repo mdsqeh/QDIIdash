@@ -18,6 +18,10 @@ const TYPE_LABELS = {
     interest: '利息', fee: '费用', split: '拆分', adjust: '持仓修正',
 };
 const SOURCE_LABELS = { manual: '手动', import: '导入', dca: '定投', adjust: '修正' };
+const QUOTE_SOURCE_LABELS = {
+    eastmoney: '东方财富', fund_em: '基金净值', binance: 'Binance',
+    manual: '手动', accrual: '按日计提',
+};
 const STATUS_LABELS = {
     awaiting_price: '等价格', filled: '已入账', skipped: '已跳过', failed: '失败',
 };
@@ -42,6 +46,11 @@ const state = {
     tab: 'overview',
     txPage: 1,
     orderFilter: '',
+    sort: {
+        holdings: { key: '', dir: 'asc' },
+        accounts: { key: '', dir: 'asc' },
+        assets: { key: '', dir: 'asc' },
+    },
     charts: {},
     planPreview: null,
 };
@@ -348,6 +357,102 @@ function renderDcaAccountFilter() {
     select.value = state.dcaAccount;
 }
 
+function compareSortValues(a, b, dir) {
+    const aMissing = a === null || a === undefined || a === '';
+    const bMissing = b === null || b === undefined || b === '';
+    if (aMissing || bMissing) {
+        if (aMissing && bMissing) return 0;
+        return aMissing ? 1 : -1;
+    }
+    const cmp = typeof a === 'number' && typeof b === 'number'
+        ? a - b
+        : String(a).localeCompare(String(b), 'zh-CN', { numeric: true, sensitivity: 'base' });
+    return dir === 'desc' ? -cmp : cmp;
+}
+
+function sortRows(table, rows, valueFor) {
+    const sort = state.sort[table];
+    if (!sort.key) return rows;
+    return rows.slice().sort((a, b) => compareSortValues(
+        valueFor(a, sort.key), valueFor(b, sort.key), sort.dir,
+    ));
+}
+
+function holdingsSortValue(p, key) {
+    switch (key) {
+        case 'name': return p.name || '';
+        case 'account_name': return p.account_name || '';
+        case 'market': return MARKET_LABELS[p.market] || p.market || '';
+        case 'quantity': return numberOrNull(p.valuation_mode === 'accrual' ? p.principal : p.units);
+        case 'avg_cost': return numberOrNull(p.avg_cost_native);
+        case 'price': return numberOrNull(p.price);
+        case 'market_value_cny': return numberOrNull(p.market_value_cny);
+        case 'pnl_cny': return numberOrNull(p.pnl_cny);
+        case 'day_pnl_cny': return numberOrNull(p.day_pnl_cny);
+        case 'weight': return numberOrNull(p.weight);
+        default: return null;
+    }
+}
+
+function accountSortValue(a, key, agg) {
+    const stats = agg.get(String(a.id)) || {};
+    switch (key) {
+        case 'name': return a.name || '';
+        case 'broker': return a.broker || '';
+        case 'currency': return a.currency || 'CNY';
+        case 'cash_cny': return numberOrNull(a.cash_cny);
+        case 'securities': return numberOrNull(stats.securities);
+        case 'pnl': return numberOrNull(stats.pnl);
+        case 'tx_count': return numberOrNull(a.tx_count);
+        case 'plan_count': return numberOrNull(a.plan_count);
+        case 'is_active': return a.is_active ? 1 : 0;
+        default: return null;
+    }
+}
+
+function assetSortValue(a, key) {
+    switch (key) {
+        case 'name': return a.name || '';
+        case 'market_category':
+            return `${MARKET_LABELS[a.market] || a.market || ''} / ${CLASS_LABELS[a.asset_class] || a.asset_class || ''}`;
+        case 'quote_source': return QUOTE_SOURCE_LABELS[a.quote_source] || a.quote_source || '';
+        case 'last_price': return numberOrNull(a.last_price);
+        case 'last_price_date': return a.last_price_date || '';
+        case 'status': return a.last_error ? 0 : 1;
+        default: return null;
+    }
+}
+
+function syncSortHeaders(table) {
+    const tableEl = document.querySelector(`table[data-sort-table="${table}"]`);
+    if (!tableEl) return;
+    const sort = state.sort[table];
+    tableEl.querySelectorAll('th[data-sort-key]').forEach(th => {
+        const active = sort.key === th.dataset.sortKey;
+        th.classList.toggle('sort-asc', active && sort.dir === 'asc');
+        th.classList.toggle('sort-desc', active && sort.dir === 'desc');
+        if (active) th.setAttribute('aria-sort', sort.dir === 'asc' ? 'ascending' : 'descending');
+        else th.removeAttribute('aria-sort');
+    });
+}
+
+function handleSortClick(th) {
+    const table = th.closest('table')?.dataset.sortTable;
+    const key = th.dataset.sortKey;
+    if (!table || !key) return;
+    const current = state.sort[table];
+    const defaultDir = th.dataset.sortDefault
+        || (th.classList.contains('num') ? 'desc' : 'asc');
+    const dir = current.key === key
+        ? (current.dir === 'asc' ? 'desc' : 'asc')
+        : defaultDir;
+    state.sort[table] = { key, dir };
+    syncSortHeaders(table);
+    if (table === 'holdings') renderHoldings();
+    else if (table === 'accounts') renderAccounts();
+    else if (table === 'assets') renderAssets();
+}
+
 function renderHoldings() {
     const body = $('#holdingsBody');
     const accountFilter = $('#holdingsAccountFilter')?.value || '';
@@ -357,6 +462,7 @@ function renderHoldings() {
             ? !p.account_id
             : String(p.account_id) === accountFilter);
     }
+    rows = sortRows('holdings', rows, holdingsSortValue);
     const viewTotal = rows.reduce((sum, p) => sum + (Number(p.market_value_cny) || 0), 0);
     $('#holdingsHint').textContent = rows.length
         ? `${rows.length} 个持仓，合计 ${fmtMoney(viewTotal)}`
@@ -407,7 +513,8 @@ function renderAccounts() {
         cur.count += 1;
         agg.set(key, cur);
     }
-    const rows = state.accounts.map(a => {
+    const accounts = sortRows('accounts', state.accounts, (a, key) => accountSortValue(a, key, agg));
+    const rows = accounts.map(a => {
         const stats = agg.get(String(a.id)) || { securities: 0, pnl: 0, count: 0 };
         const canDelete = !a.tx_count && !a.plan_count;
         const balances = Array.isArray(a.cash_balances) ? a.cash_balances : [];
@@ -595,10 +702,11 @@ function renderAssets() {
         body.innerHTML = '<tr><td colspan="7"><div class="empty">还没有资产。添加股票、基金、加密货币或银行理财。</div></td></tr>';
         return;
     }
-    body.innerHTML = state.assets.map(a => {
+    const assets = sortRows('assets', state.assets, assetSortValue);
+    body.innerHTML = assets.map(a => {
         const canDelete = !a.plan_count;
         const isAccrual = a.quote_source === 'accrual' || a.valuation_mode === 'accrual';
-        const sourceLabel = { eastmoney: '东方财富', fund_em: '基金净值', binance: 'Binance', manual: '手动', accrual: '按日计提' }[a.quote_source] || a.quote_source;
+        const sourceLabel = QUOTE_SOURCE_LABELS[a.quote_source] || a.quote_source;
         return `<tr>
             <td><div class="asset-cell"><span class="name">${esc(a.name)} ${a.is_active ? '' : '<span class="tag tag-skipped">停用</span>'}</span><span class="code">${esc(a.symbol)}</span></div></td>
             <td>${esc(MARKET_LABELS[a.market] || a.market)} / ${esc(CLASS_LABELS[a.asset_class] || a.asset_class)}</td>
@@ -982,6 +1090,8 @@ function switchTab(tab) {
 function bindEvents() {
     $$('.tab').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
     document.addEventListener('click', event => {
+        const sortHeader = event.target.closest('th[data-sort-key]');
+        if (sortHeader) { handleSortClick(sortHeader); return; }
         const jump = event.target.closest('[data-tab-jump]');
         if (jump) { switchTab(jump.dataset.tabJump); return; }
         const pageBtn = event.target.closest('[data-page]');

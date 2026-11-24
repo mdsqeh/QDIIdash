@@ -113,11 +113,11 @@
             <span class="muted" id="holdingsHint"></span>
         </div>
         <div class="table-wrap">
-            <table>
+            <table data-sort-table="holdings">
                 <thead><tr>
-                    <th>资产</th><th>账户</th><th>市场</th><th class="num">数量 / 本金</th><th class="num">均价</th>
-                    <th class="num">现价</th><th class="num">市值 (CNY)</th><th class="num">累计盈亏</th>
-                    <th class="num">最新日</th><th class="num">占比</th><th></th>
+                    <th data-sort-key="name">资产</th><th data-sort-key="account_name">账户</th><th data-sort-key="market">市场</th><th class="num" data-sort-key="quantity">数量 / 本金</th><th class="num" data-sort-key="avg_cost">均价</th>
+                    <th class="num" data-sort-key="price">现价</th><th class="num" data-sort-key="market_value_cny">市值 (CNY)</th><th class="num" data-sort-key="pnl_cny">累计盈亏</th>
+                    <th class="num" data-sort-key="day_pnl_cny">当日盈亏</th><th class="num" data-sort-key="weight">占比</th><th></th>
                 </tr></thead>
                 <tbody id="holdingsBody"></tbody>
             </table>
@@ -225,11 +225,11 @@
             <span class="muted" id="accountsHint"></span>
         </div>
         <div class="table-wrap">
-            <table>
+            <table data-sort-table="accounts">
                 <thead><tr>
-                    <th>账户</th><th>平台</th><th>默认币种</th><th class="num">现金</th>
-                    <th class="num">证券市值 (CNY)</th><th class="num">证券盈亏</th>
-                    <th class="num">交易</th><th class="num">计划</th><th>状态</th><th></th>
+                    <th data-sort-key="name">账户</th><th data-sort-key="broker">平台</th><th data-sort-key="currency">默认币种</th><th class="num" data-sort-key="cash_cny">现金</th>
+                    <th class="num" data-sort-key="securities">证券市值 (CNY)</th><th class="num" data-sort-key="pnl">证券盈亏</th>
+                    <th class="num" data-sort-key="tx_count">交易</th><th class="num" data-sort-key="plan_count">计划</th><th data-sort-key="is_active" data-sort-default="desc">状态</th><th></th>
                 </tr></thead>
                 <tbody id="accountsBody"></tbody>
             </table>
@@ -244,10 +244,10 @@
             <a class="btn btn-ghost" href="/api/wm/import/csv/template">CSV 模板</a>
         </div>
         <div class="table-wrap">
-            <table>
+            <table data-sort-table="assets">
                 <thead><tr>
-                    <th>资产</th><th>市场 / 类别</th><th>行情源</th><th class="num">最新价</th>
-                    <th>价格日期</th><th>状态</th><th></th>
+                    <th data-sort-key="name">资产</th><th data-sort-key="market_category">市场 / 类别</th><th data-sort-key="quote_source">行情源</th><th class="num" data-sort-key="last_price">最新价</th>
+                    <th data-sort-key="last_price_date" data-sort-default="desc">价格日期</th><th data-sort-key="status">状态</th><th></th>
                 </tr></thead>
                 <tbody id="assetsBody"></tbody>
             </table>

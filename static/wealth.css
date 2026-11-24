@@ -375,6 +375,24 @@ thead th {
     white-space: nowrap;
 }
 
+thead th[data-sort-key] {
+    cursor: pointer;
+    user-select: none;
+}
+thead th[data-sort-key]:hover { color: var(--text); background: rgba(255, 255, 255, 0.035); }
+thead th[data-sort-key]::after {
+    content: '';
+    display: inline-block;
+    width: 0.9em;
+    margin-left: 2px;
+    color: var(--text-muted);
+    font-size: 0.6rem;
+}
+thead th[data-sort-key].sort-asc,
+thead th[data-sort-key].sort-desc { color: var(--text); }
+thead th[data-sort-key].sort-asc::after { content: '↑'; color: var(--accent); }
+thead th[data-sort-key].sort-desc::after { content: '↓'; color: var(--accent); }
+
 tbody td {
     padding: 11px 12px;
     border-bottom: 1px solid var(--border-soft);

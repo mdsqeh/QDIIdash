@@ -217,6 +217,24 @@ def _channels_in(text):
     return found
 
 
+def _fallback_channels(fund, text=''):
+    """Return the channel to use when an announcement does not name one.
+
+    Some share classes are sold only through one channel.  For those funds a
+    channel-less announcement still applies to that channel, not to every
+    channel.
+    """
+    text = normalize_text(text)
+    if any(word in text for word in ('全渠道', '各销售渠道', '所有销售渠道', '各渠道')):
+        return [('all', '全渠道')]
+    default = (fund.get('default_channel') or '').lower()
+    if default == 'direct':
+        return [('direct', '直销')]
+    if default == 'agency':
+        return [('agency', '代销机构')]
+    return [('all', '全渠道')]
+
+
 def _business_type(text):
     text = normalize_text(text)
     if '定投' in text and '申购' not in text:
@@ -350,9 +368,7 @@ def parse_announcement(title, text, fund, published_at=None):
     # A full suspension is stronger than any amount mentioned elsewhere in the
     # document.  "暂停大额申购" is different and is handled as a limit.
     if '暂停申购' in title and '大额' not in title and '恢复' not in title:
-        title_channels = _channels_in(title)
-        if not title_channels:
-            title_channels = [('all', '全渠道')]
+        title_channels = _channels_in(title) or _fallback_channels(fund, title)
         business_type = _business_type(title or text)
         for channel_type, channel_name in title_channels:
             _append_limit(
@@ -366,9 +382,7 @@ def parse_announcement(title, text, fund, published_at=None):
     # fund is absent, do not apply a generic sentence or another class's amount.
     has_code_table, code_listed = _code_table_scope(text, fund)
     if has_code_table and not code_listed:
-        title_channels = _channels_in(title)
-        if not title_channels:
-            title_channels = [('all', '全渠道')]
+        title_channels = _channels_in(title) or _fallback_channels(fund, title)
         business_type = _business_type(title or text)
         for channel_type, channel_name in title_channels:
             _append_limit(
@@ -386,9 +400,7 @@ def parse_announcement(title, text, fund, published_at=None):
         and not ('恢复' in title and '暂停' not in title)
     ):
         effective_from = _extract_effective_date(text, published_at, latest=True)
-        title_channels = _channels_in(title)
-        if not title_channels:
-            title_channels = [('all', '全渠道')]
+        title_channels = _channels_in(title) or _fallback_channels(fund, title)
         business_type = _business_type(title or text)
         status = 'amount_cap' if table_amount is not None else 'normal'
         for channel_type, channel_name in title_channels:
@@ -419,9 +431,7 @@ def parse_announcement(title, text, fund, published_at=None):
 
     # Fallback: title-only channel or a document without channel wording.
     if not limits:
-        title_channels = _channels_in(title)
-        if not title_channels:
-            title_channels = [('all', '全渠道')]
+        title_channels = _channels_in(title) or _fallback_channels(fund, title)
         amount, _ = _extract_amount(text, currency)
         status = 'amount_cap' if amount is not None else _status_in(title)
         if status is None:
@@ -440,9 +450,10 @@ def parse_announcement(title, text, fund, published_at=None):
     # If the document mentions both direct and agency but no sentence was
     # parsed, keep both channels rather than silently collapsing them.
     if not limits:
-        _append_limit(
-            limits, fund, 'all', '全渠道', 'unknown', None, title,
-            'subscription', effective_from,
-        )
+        for channel_type, channel_name in _fallback_channels(fund, title):
+            _append_limit(
+                limits, fund, channel_type, channel_name, 'unknown', None, title,
+                'subscription', effective_from,
+            )
 
     return limits

@@ -76,7 +76,7 @@ class QuotaDiscoveryTests(unittest.TestCase):
         self.assertEqual(company_name_from_fund('纳斯达克100ETF大成'), '')
         self.assertEqual(company_short_name('华泰柏瑞'), '华泰柏瑞基金')
 
-    def test_sync_adds_all_share_classes_and_keeps_manual_limit(self):
+    def test_sync_adds_all_share_classes_and_keeps_default_channel(self):
         result = sync_nasdaq100_funds(self.db_path)
         self.assertFalse(result['skipped'])
         self.assertEqual(result['discovered'], 8)
@@ -85,8 +85,8 @@ class QuotaDiscoveryTests(unittest.TestCase):
 
         conn = connect(self.db_path)
         rows = conn.execute(
-            "SELECT code, share_class, currency, csrc_code FROM quota_fund "
-            "WHERE discovery_source = 'homepage' ORDER BY code"
+            "SELECT code, share_class, currency, csrc_code, default_channel "
+            "FROM quota_fund WHERE discovery_source = 'homepage' ORDER BY code"
         ).fetchall()
         by_code = {row['code']: row for row in rows}
         self.assertEqual(
@@ -99,6 +99,7 @@ class QuotaDiscoveryTests(unittest.TestCase):
         self.assertEqual(by_code['016453']['share_class'], 'C')
         self.assertEqual(by_code['000055']['currency'], 'USD')
         self.assertEqual(by_code['021000']['csrc_code'], '016452')
+        self.assertEqual(by_code['021000']['default_channel'], 'direct')
         self.assertEqual(by_code['016453']['csrc_code'], '016452')
         self.assertEqual(by_code['006480']['csrc_code'], '270042')
         self.assertNotIn('159513', by_code)
@@ -112,12 +113,11 @@ class QuotaDiscoveryTests(unittest.TestCase):
         self.assertEqual(company['short_name'], '招商基金')
 
         manual = conn.execute(
-            """SELECT l.amount FROM quota_limit l
+            """SELECT 1 FROM quota_limit l
                JOIN quota_fund f ON f.id = l.fund_id
-               WHERE f.code = '021000' AND l.channel_type = 'direct'
-                 AND l.is_manual = 1"""
+               WHERE f.code = '021000' AND l.is_manual = 1"""
         ).fetchone()
-        self.assertEqual(manual['amount'], 200.0)
+        self.assertIsNone(manual)
         conn.close()
 
         again = sync_nasdaq100_funds(self.db_path)

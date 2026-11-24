@@ -248,6 +248,32 @@ class QuotaParserTests(unittest.TestCase):
         self.assertEqual(by_channel['agency']['amount'], 10.0)
         self.assertEqual(by_channel['direct']['amount'], 100.0)
 
+    def test_default_channel_applies_to_channel_less_announcement(self):
+        fund = {
+            'code': '021000',
+            'share_class': 'I',
+            'currency': 'CNY',
+            'default_channel': 'direct',
+        }
+        text = '下属基金份额的代码 021000 该基金份额的限制金额 200 元。'
+        title = '关于调整南方纳斯达克100指数发起式证券投资基金（QDII）I类基金份额申购金额限制的公告'
+        limits = parse_announcement(title, text, fund, '2026-07-20')
+        self.assertEqual(limits[0]['channel_type'], 'direct')
+        self.assertEqual(limits[0]['amount'], 200.0)
+
+    def test_explicit_agency_channel_beats_default_channel(self):
+        fund = {
+            'code': '021000',
+            'share_class': 'I',
+            'currency': 'CNY',
+            'default_channel': 'direct',
+        }
+        text = '本基金I类基金份额在代销渠道单日申购限额为100元。'
+        title = '关于调整南方纳斯达克100指数发起式证券投资基金（QDII）I类基金份额申购金额限制的公告'
+        limits = parse_announcement(title, text, fund, '2026-07-20')
+        self.assertEqual(limits[0]['channel_type'], 'agency')
+        self.assertEqual(limits[0]['amount'], 100.0)
+
     def test_channel_specific_parse(self):
         fund = [item for item in FUNDS if item['code'] == '015299'][0]
         text = (
@@ -314,26 +340,15 @@ class QuotaServiceTests(unittest.TestCase):
         )
         self.conn.commit()
 
-    def test_i_share_uses_parent_csrc_code_and_direct_seed(self):
+    def test_i_share_uses_parent_csrc_code_and_default_direct_channel(self):
         row = self.conn.execute(
-            "SELECT id, csrc_code FROM quota_fund WHERE code = '021000'"
+            "SELECT id, csrc_code, default_channel FROM quota_fund WHERE code = '021000'"
         ).fetchone()
         self.assertEqual(row['csrc_code'], '016452')
-        manual = self.conn.execute(
-            """SELECT amount FROM quota_limit
-               WHERE fund_id = ? AND channel_type = 'direct' AND is_manual = 1""",
-            (row['id'],),
-        ).fetchone()
-        self.assertEqual(manual['amount'], 200.0)
-
-        set_manual_limit(self.conn, '021000', {
-            'channel_type': 'direct',
-            'clear': True,
-        })
-        init_quota_db(self.db_path)
+        self.assertEqual(row['default_channel'], 'direct')
         manual = self.conn.execute(
             """SELECT 1 FROM quota_limit
-               WHERE fund_id = ? AND channel_type = 'direct' AND is_manual = 1""",
+               WHERE fund_id = ? AND is_manual = 1""",
             (row['id'],),
         ).fetchone()
         self.assertIsNone(manual)

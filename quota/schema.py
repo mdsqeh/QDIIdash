@@ -125,8 +125,7 @@ FUNDS = [
         'share_class': 'I',
         'currency': 'CNY',
         'csrc_code': '016452',
-        'manual_direct_amount': 200,
-        'manual_note': '初始人工记录：用户反馈南方基金直销 200 元',
+        'default_channel': 'direct',
         'official_url': 'https://www.nffund.com',
     },
     {
@@ -223,6 +222,7 @@ CREATE TABLE IF NOT EXISTS quota_fund (
     name               TEXT NOT NULL,
     share_class        TEXT NOT NULL DEFAULT 'A',
     currency           TEXT NOT NULL DEFAULT 'CNY',
+    default_channel    TEXT,
     index_name         TEXT NOT NULL DEFAULT '纳斯达克100',
     official_url       TEXT,
     enabled            INTEGER NOT NULL DEFAULT 1,
@@ -325,6 +325,7 @@ def init_quota_db(db_path):
             ('csrc_code', 'TEXT'),
             ('discovery_source', 'TEXT'),
             ('last_seen_at', 'TEXT'),
+            ('default_channel', 'TEXT'),
         ):
             if column not in fund_columns:
                 conn.execute(f'ALTER TABLE quota_fund ADD COLUMN {column} {ddl}')
@@ -371,6 +372,13 @@ def init_quota_db(db_path):
                             f'人工记录：直销 {fund["manual_direct_amount"]} 元',
                             now[:10], note, now, now,
                         ),
+                    )
+                if fund.get('default_channel'):
+                    conn.execute(
+                        """UPDATE quota_fund SET default_channel = ?
+                           WHERE code = ?
+                             AND (default_channel IS NULL OR default_channel = '')""",
+                        (fund['default_channel'], fund['code']),
                     )
         conn.execute(
             "UPDATE quota_fund SET csrc_code = code "

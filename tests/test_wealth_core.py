@@ -580,6 +580,21 @@ class DcaTests(WealthTestBase):
         self.assertNotIn('2026-01-03', due_dates)
         self.assertNotIn('2026-01-04', due_dates)
 
+    def test_us_market_holidays_are_closed(self):
+        # Thanksgiving 2026-11-26; Independence Day observed 2026-07-03;
+        # Christmas 2026-12-25 are all full-day closures.
+        self.assertFalse(prices.is_us_trading_day(date(2026, 11, 26)))
+        self.assertFalse(prices.is_us_trading_day(date(2026, 7, 3)))
+        self.assertFalse(prices.is_us_trading_day(date(2026, 12, 25)))
+        self.assertTrue(prices.is_us_trading_day(date(2026, 11, 27)))
+
+    def test_us_plan_rolls_over_holiday(self):
+        self.assertEqual(
+            dca.resolve_trade_date(self.conn, {'market': 'US'}, date(2026, 11, 26), 'next'),
+            date(2026, 11, 27))
+        self.assertIsNone(
+            dca.resolve_trade_date(self.conn, {'market': 'US'}, date(2026, 11, 26), 'skip'))
+
     def test_preview_does_not_count_today_as_backfill(self):
         today = datetime.now(SHANGHAI_TZ).date()
         asset_id = self.add_asset()

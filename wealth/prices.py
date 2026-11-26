@@ -8,7 +8,7 @@ Primary sources are chosen to work from mainland China:
 """
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import requests
 
@@ -689,12 +689,86 @@ def is_cn_trading_day(conn, day):
     return day.weekday() < 5
 
 
+def _last_day_of_month(year, month):
+    if month == 12:
+        return date(year, 12, 31)
+    return date(year, month + 1, 1) - timedelta(days=1)
+
+
+def _nth_weekday(year, month, weekday, n):
+    """The n-th ``weekday`` (Mon=0) of a month; ``n=-1`` is the last one."""
+    if n > 0:
+        first = date(year, month, 1)
+        return first + timedelta(days=(weekday - first.weekday()) % 7 + 7 * (n - 1))
+    last = _last_day_of_month(year, month)
+    return last - timedelta(days=(last.weekday() - weekday) % 7)
+
+
+def _easter_sunday(year):
+    """Gregorian Easter Sunday (anonymous algorithm)."""
+    a = year % 19
+    b, c = divmod(year, 100)
+    d, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = (h + l - 7 * m + 114) % 31 + 1
+    return date(year, month, day)
+
+
+def _observed(day):
+    """NYSE shifts a fixed-date holiday off the weekend onto a weekday."""
+    if day.weekday() == 5:
+        return day - timedelta(days=1)
+    if day.weekday() == 6:
+        return day + timedelta(days=1)
+    return day
+
+
+_US_HOLIDAYS = {}
+
+
+def us_market_holidays(year):
+    """Full-day NYSE/Nasdaq closures for a calendar year (rule-based)."""
+    cached = _US_HOLIDAYS.get(year)
+    if cached is not None:
+        return cached
+    holidays = {
+        _observed(date(year, 1, 1)),               # New Year's Day
+        _nth_weekday(year, 1, 0, 3),               # Martin Luther King Jr. Day
+        _nth_weekday(year, 2, 0, 3),               # Washington's Birthday
+        _easter_sunday(year) - timedelta(days=2),  # Good Friday
+        _nth_weekday(year, 5, 0, -1),              # Memorial Day
+        _observed(date(year, 6, 19)),              # Juneteenth
+        _observed(date(year, 7, 4)),               # Independence Day
+        _nth_weekday(year, 9, 0, 1),               # Labor Day
+        _nth_weekday(year, 11, 3, 4),              # Thanksgiving
+        _observed(date(year, 12, 25)),             # Christmas
+    }
+    next_new_year = _observed(date(year + 1, 1, 1))
+    if next_new_year.year == year:                 # observed on Dec 31 of this year
+        holidays.add(next_new_year)
+    _US_HOLIDAYS[year] = holidays
+    return holidays
+
+
+def is_us_trading_day(day):
+    day = parse_date(day)
+    return day.weekday() < 5 and day not in us_market_holidays(day.year)
+
+
 def next_trading_day(conn, market, day, direction=1):
     day = parse_date(day)
     for _ in range(40):
         if market == 'CN':
             open_day = is_cn_trading_day(conn, day)
-        elif market in ('US', 'HK'):
+        elif market == 'US':
+            open_day = is_us_trading_day(day)
+        elif market == 'HK':
             open_day = day.weekday() < 5
         else:
             open_day = True

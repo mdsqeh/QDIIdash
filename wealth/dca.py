@@ -54,7 +54,9 @@ def next_due(plan, after):
 def _is_open(conn, market, day):
     if market in ('CN', 'FUND_CN'):
         return prices.is_cn_trading_day(conn, day)
-    if market in ('US', 'HK'):
+    if market == 'US':
+        return prices.is_us_trading_day(day)
+    if market == 'HK':
         return day.weekday() < 5
     return True
 

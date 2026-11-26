@@ -202,15 +202,8 @@ def check_quotas(db_path, webhook_url=None, webhook_secret=None):
         conn.close()
 
 
-def _send_webhook(url, secret, changes):
-    """发送 webhook 通知。"""
-    lines = []
-    for c, name, field, old, new, _ in changes:
-        label = '日申购限额' if field == 'daily_limit' else '申购状态'
-        lines.append(f"基金 {c}（{name}）{label}：{old} → {new}")
-
-    message = "QDII 额度变动\n" + "\n".join(lines)
-
+def send_message(url, secret, message):
+    """POST {message, secret} to a webhook. Returns True on success."""
     try:
         resp = requests.post(
             url,
@@ -219,7 +212,19 @@ def _send_webhook(url, secret, changes):
         )
         if resp.ok:
             print(f"  ✅ Webhook 发送成功 ({resp.status_code})", flush=True)
-        else:
-            print(f"  ⚠️ Webhook 发送失败 ({resp.status_code})", flush=True)
+            return True
+        print(f"  ⚠️ Webhook 发送失败 ({resp.status_code})", flush=True)
     except Exception as e:
         print(f"  ⚠️ Webhook 请求失败: {e}", flush=True)
+    return False
+
+
+def _send_webhook(url, secret, changes):
+    """发送额度变动 webhook 通知。"""
+    lines = []
+    for c, name, field, old, new, _ in changes:
+        label = '日申购限额' if field == 'daily_limit' else '申购状态'
+        lines.append(f"基金 {c}（{name}）{label}：{old} → {new}")
+
+    message = "QDII 额度变动\n" + "\n".join(lines)
+    send_message(url, secret, message)

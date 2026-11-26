@@ -4,7 +4,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from quota.parser import (
     _extract_amount,
@@ -12,6 +12,8 @@ from quota.parser import (
     is_share_class_relevant,
     parse_announcement,
 )
+import quota.report as quota_report
+from quota.report import build_daily_report, is_trade_day
 from quota.schema import FUNDS, init_quota_db
 from quota.service import (
     connect,
@@ -488,6 +490,64 @@ class QuotaServiceTests(unittest.TestCase):
         detail = get_fund_detail(self.conn, '015299')
         self.assertFalse(detail['fund']['direct']['is_manual'])
         self.assertEqual(detail['fund']['direct']['amount'], 100.0)
+
+
+class QuotaReportTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self._tmp.name, 'quota-report.db')
+        init_quota_db(self.db_path)
+        self.conn = connect(self.db_path)
+
+    def tearDown(self):
+        self.conn.close()
+        gc.collect()
+        self._tmp.cleanup()
+
+    def _add_limit(self, code, channel, status, amount, effective='2026-01-01'):
+        fund = self.conn.execute(
+            "SELECT * FROM quota_fund WHERE code = ?", (code,)
+        ).fetchone()
+        self.conn.execute(
+            """INSERT INTO quota_limit
+               (fund_id, announcement_id, channel_type, channel_name, status, amount,
+                currency, limit_text, business_type, effective_from, effective_to,
+                confidence, is_manual, note, created_at, updated_at)
+               VALUES (?, NULL, ?, ?, ?, ?, ?, '', 'subscription', ?, NULL,
+                       0.9, 0, NULL, ?, ?)""",
+            (fund['id'], channel, channel, status, amount, fund['currency'],
+             effective, _now(), _now()),
+        )
+        self.conn.commit()
+
+    def test_report_lists_purchasable_funds_and_totals(self):
+        self._add_limit('015299', 'direct', 'amount_cap', 100)
+        report = build_daily_report(self.conn)
+        self.assertIn('可购最大总额：¥100', report)
+        self.assertIn('可购买基金（1 只）', report)
+        self.assertIn('｜ 直销 ¥100', report)
+
+    def test_unlimited_makes_total_unlimited(self):
+        self._add_limit('015299', 'all', 'normal', None)
+        report = build_daily_report(self.conn)
+        self.assertIn('可购最大总额：¥不限', report)
+        self.assertIn('全渠道 不限', report)
+
+    def test_paused_fund_is_excluded(self):
+        self._add_limit('015299', 'all', 'paused', None)
+        report = build_daily_report(self.conn)
+        self.assertIn('可购最大总额：无', report)
+        self.assertIn('可购买基金：暂无', report)
+
+    def test_is_trade_day_uses_calendar_with_weekday_fallback(self):
+        today = datetime.now(quota_report.SHANGHAI_TZ).date()
+        quota_report._TRADE_DAYS['day'] = today
+        quota_report._TRADE_DAYS['days'] = {'2026-11-26'}
+        self.assertTrue(is_trade_day(date(2026, 11, 26)))
+        self.assertFalse(is_trade_day(date(2026, 11, 25)))  # weekday but not in set
+        quota_report._TRADE_DAYS['days'] = None
+        self.assertTrue(is_trade_day(date(2026, 11, 26)))   # Thursday fallback
+        self.assertFalse(is_trade_day(date(2026, 11, 28)))  # Saturday fallback
 
 
 if __name__ == '__main__':

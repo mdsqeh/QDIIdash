@@ -41,7 +41,9 @@ from quota import (
     start_quota_check_async,
     sync_nasdaq100_funds,
 )
-from quota_watcher import check_quotas
+from quota.report import build_daily_report, is_trade_day
+from quota.service import connect as quota_connect
+from quota_watcher import check_quotas, send_message
 from wealth import register as register_wealth, register_wealth_jobs, startup_catchup
 from wealth.db import connect as wealth_connect
 from wealth.portfolio import build_positions
@@ -400,6 +402,26 @@ def _do_check_quota():
             print("✅ 额度无变动", flush=True)
     except Exception as e:
         print(f"❌ 额度检测失败: {e}", flush=True)
+
+
+def _do_quota_report():
+    """每个交易日推送纳斯达克100场外基金额度日报。"""
+    if not is_trade_day():
+        print("📅 今日非交易日，跳过额度日报", flush=True)
+        return
+    if not WEBHOOK_URL:
+        print("⚠️ 未配置 WEBHOOK_URL，跳过额度日报", flush=True)
+        return
+    print("📊 生成额度日报...", flush=True)
+    try:
+        conn = quota_connect(DB_PATH)
+        try:
+            message = build_daily_report(conn)
+        finally:
+            conn.close()
+        send_message(WEBHOOK_URL, WEBHOOK_SECRET, message)
+    except Exception as e:
+        print(f"❌ 额度日报失败: {e}", flush=True)
 
 
 # ── Flask 路由 ──────────────────────────────────────────────────
@@ -913,10 +935,11 @@ def _start_scheduler():
     scheduler.add_job(_do_fetch_incremental, 'cron', hour=21, minute=0, id='daily_incremental')
     scheduler.add_job(_do_check_quota, 'cron', day_of_week='mon-fri', hour='9-19', minute=0, id='quota_check')
     scheduler.add_job(_do_check_quota, 'cron', day_of_week='mon-fri', hour=21, minute=5, id='quota_check_after_fetch')
+    scheduler.add_job(_do_quota_report, 'cron', hour=17, minute=30, id='quota_daily_report')
     register_quota_jobs(scheduler, lambda: DB_PATH)
     register_wealth_jobs(scheduler)
     scheduler.start()
-    print("📅 定时任务已启动：每月1号 21:00 全量采集，每日 21:00 增量更新，额度监控交易日 9:00-19:00 每小时及 21:05，额度公告每日 8:10/12:10/17:10")
+    print("📅 定时任务已启动：每月1号 21:00 全量采集，每日 21:00 增量更新，额度监控交易日 9:00-19:00 每小时及 21:05，额度公告每日 8:10/12:10/17:10，额度日报交易日 17:30")
 
 
 if __name__ == '__main__':

@@ -230,6 +230,24 @@ def _migrate_account_balance(conn):
         raise
 
 
+def _migrate_us_quote_source(conn):
+    """Point existing US assets at Yahoo (previously Eastmoney)."""
+    done = conn.execute(
+        "SELECT value FROM wm_meta WHERE key = 'us_yahoo_source'"
+    ).fetchone()
+    if done:
+        return
+    conn.execute(
+        "UPDATE wm_asset SET quote_source = 'yahoo', quote_key = symbol "
+        "WHERE market = 'US' AND quote_source = 'eastmoney'"
+    )
+    conn.execute(
+        "INSERT INTO wm_meta (key, value) VALUES ('us_yahoo_source', '1') "
+        "ON CONFLICT(key) DO UPDATE SET value = '1'"
+    )
+    conn.commit()
+
+
 def init_wealth_db(path=None):
     conn = connect(path)
     try:
@@ -239,6 +257,7 @@ def init_wealth_db(path=None):
         _ensure_column(conn, 'wm_transaction', 'cash_adjusted', 'INTEGER NOT NULL DEFAULT 0')
         _ensure_column(conn, 'wm_asset', 'last_error', 'TEXT')
         _migrate_account_balance(conn)
+        _migrate_us_quote_source(conn)
         count = conn.execute('SELECT COUNT(*) AS c FROM wm_account').fetchone()['c']
         if not count:
             conn.execute(

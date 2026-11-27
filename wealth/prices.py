@@ -9,6 +9,7 @@ Primary sources are chosen to work from mainland China:
 import json
 import re
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -108,6 +109,69 @@ def eastmoney_kline(quote_key, start, end):
         except ValueError:
             continue
     return result
+
+
+YAHOO_CHART = 'https://query1.finance.yahoo.com/v8/finance/chart/'
+YAHOO_HEADERS = {
+    'User-Agent': HEADERS['User-Agent'],
+    'Accept': 'application/json,text/plain,*/*',
+}
+
+
+def _yahoo_chart(symbol, params):
+    data = _get(YAHOO_CHART + symbol, headers=YAHOO_HEADERS, params=params).json()
+    chart = data.get('chart') or {}
+    result = chart.get('result') or []
+    if not result:
+        error = chart.get('error') or {}
+        detail = error.get('description') or error.get('code') or '无数据'
+        raise PriceError(f'Yahoo 行情不可用: {symbol} ({detail})')
+    return result[0]
+
+
+def yahoo_quote(symbol):
+    meta = _yahoo_chart(symbol, {'interval': '1d', 'range': '5d'}).get('meta') or {}
+    price = meta.get('regularMarketPrice')
+    if price is None:
+        raise PriceError(f'Yahoo 价格无效: {symbol}')
+    prev_close = meta.get('chartPreviousClose')
+    if prev_close is None:
+        prev_close = meta.get('previousClose')
+    return {
+        'name': (meta.get('longName') or meta.get('shortName') or '').strip(),
+        'price': float(price),
+        'prev_close': float(prev_close) if prev_close is not None else None,
+        'symbol': meta.get('symbol') or symbol,
+    }
+
+
+def yahoo_kline(symbol, start, end):
+    start = parse_date(start)
+    end = parse_date(end)
+    begin = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
+    finish = datetime.combine(end + timedelta(days=1), datetime.min.time(),
+                              tzinfo=timezone.utc)
+    node = _yahoo_chart(symbol, {
+        'interval': '1d',
+        'period1': int(begin.timestamp()),
+        'period2': int(finish.timestamp()),
+    })
+    zone = (node.get('meta') or {}).get('exchangeTimezoneName') or 'UTC'
+    try:
+        tzinfo = ZoneInfo(zone)
+    except Exception:
+        tzinfo = timezone.utc
+    stamps = node.get('timestamp') or []
+    quotes = (node.get('indicators') or {}).get('quote') or []
+    closes = (quotes[0].get('close') if quotes else None) or []
+    rows = []
+    for stamp, close in zip(stamps, closes):
+        if close is None:
+            continue
+        day = datetime.fromtimestamp(stamp, tzinfo).date()
+        if start <= day <= end:
+            rows.append((day.isoformat(), float(close)))
+    return rows
 
 
 _FUND_USD_RE = re.compile(r'美元(?:现汇|现钞|汇|份额|[A-Za-z]|[（()）]|$)')
@@ -415,8 +479,13 @@ def sync_asset(conn, asset, full=False, start=None):
                 _update_asset_last(conn, asset_id, rows[-1][1], rows[-1][0])
         return count
 
-    if source == 'eastmoney':
-        key = resolve_quote_key(conn, asset)
+    if source in ('eastmoney', 'yahoo'):
+        if source == 'yahoo':
+            key = asset.get('quote_key') or asset['symbol']
+            kline_fn, quote_fn, bar_source = yahoo_kline, yahoo_quote, 'yahoo'
+        else:
+            key = resolve_quote_key(conn, asset)
+            kline_fn, quote_fn, bar_source = eastmoney_kline, eastmoney_quote, 'eastmoney'
         if not key:
             raise PriceError(f'无法解析行情代码: {asset["symbol"]}')
         start_date = parse_date(start) if start else None
@@ -436,7 +505,7 @@ def sync_asset(conn, asset, full=False, start=None):
         end = today
         rows = []
         if start_date <= end:
-            rows = eastmoney_kline(key, start_date, end)
+            rows = kline_fn(key, start_date, end)
         prev = conn.execute(
             'SELECT close FROM wm_price WHERE asset_id = ? AND price_date < ? ORDER BY price_date DESC LIMIT 1',
             (asset_id, iso(start_date)),
@@ -444,11 +513,11 @@ def sync_asset(conn, asset, full=False, start=None):
         prev_close = float(prev['close']) if prev else None
         count = 0
         for price_date, close in rows:
-            _upsert_price(conn, asset_id, price_date, close, prev_close, 'eastmoney')
+            _upsert_price(conn, asset_id, price_date, close, prev_close, bar_source)
             prev_close = close
             count += 1
         # Refresh the name and use the quote when the daily bar is not published yet.
-        quote = eastmoney_quote(key)
+        quote = quote_fn(key)
         if quote.get('name'):
             conn.execute(
                 """UPDATE wm_asset SET name = ? WHERE id = ?
@@ -462,7 +531,7 @@ def sync_asset(conn, asset, full=False, start=None):
         # For US symbols the daily bar date is the US trading date; do not add a
         # second "Beijing today" row from the live quote. It would shift daily P&L.
         if quote.get('price') and (not last or (asset['market'] == 'CN' and last['price_date'] < today_str())):
-            _upsert_price(conn, asset_id, today_str(), quote['price'], quote.get('prev_close'), 'eastmoney_quote')
+            _upsert_price(conn, asset_id, today_str(), quote['price'], quote.get('prev_close'), bar_source + '_quote')
             _update_asset_last(conn, asset_id, quote['price'], today_str())
         elif last:
             _update_asset_last(conn, asset_id, float(last['close']), last['price_date'])

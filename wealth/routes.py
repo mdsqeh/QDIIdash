@@ -251,7 +251,7 @@ def _asset_native_currency(market, name=None):
 
 def _default_source(market):
     return {
-        'CN': 'eastmoney', 'US': 'eastmoney', 'HK': 'eastmoney',
+        'CN': 'eastmoney', 'US': 'yahoo', 'HK': 'eastmoney',
         'FUND_CN': 'fund_em', 'CRYPTO': 'binance', 'BANK': 'accrual',
         'MANUAL': 'manual',
     }.get(market, 'manual')
@@ -323,6 +323,8 @@ def _create_asset_record(conn, data, resolve=False):
             quote_key = prices.eastmoney_secid(symbol, market)
         elif market == 'HK':
             quote_key = prices.eastmoney_secid(symbol, market)
+        elif market == 'US' and quote_source == 'yahoo':
+            quote_key = symbol
         elif market == 'FUND_CN':
             quote_key = symbol
         elif market == 'CRYPTO':
@@ -364,9 +366,14 @@ def _lookup_name(conn, market, symbol):
             return name
         except Exception:
             return ''
-    if market in ('CN', 'US', 'HK'):
+    if market == 'US':
         try:
-            key = prices.eastmoney_secid(symbol, market) or prices.resolve_eastmoney_us(symbol)
+            return prices.yahoo_quote(symbol).get('name') or ''
+        except Exception:
+            return ''
+    if market in ('CN', 'HK'):
+        try:
+            key = prices.eastmoney_secid(symbol, market)
             return prices.eastmoney_quote(key).get('name') or ''
         except Exception:
             return ''
@@ -773,8 +780,14 @@ def api_lookup():
             return jsonify({'found': True, 'name': name, 'price': price,
                             'currency': currency,
                             'quote_source': 'fund_em', 'quote_key': symbol})
-        if market in ('CN', 'US', 'HK'):
-            key = prices.eastmoney_secid(symbol, market) or prices.resolve_eastmoney_us(symbol)
+        if market == 'US':
+            quote = prices.yahoo_quote(symbol)
+            return jsonify({'found': True, 'name': quote.get('name'), 'price': quote['price'],
+                            'prev_close': quote.get('prev_close'),
+                            'currency': _default_currency(market), 'quote_source': 'yahoo',
+                            'quote_key': symbol})
+        if market in ('CN', 'HK'):
+            key = prices.eastmoney_secid(symbol, market)
             quote = prices.eastmoney_quote(key)
             return jsonify({'found': True, 'name': quote.get('name'), 'price': quote['price'],
                             'prev_close': quote.get('prev_close'),

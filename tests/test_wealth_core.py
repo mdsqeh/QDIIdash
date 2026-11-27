@@ -3,6 +3,8 @@ import os
 import tempfile
 import unittest
 from datetime import date, datetime, timedelta
+from unittest import mock
+from zoneinfo import ZoneInfo
 
 from wealth.db import SHANGHAI_TZ, connect, now_iso, today_str
 from wealth import dca, portfolio, prices
@@ -1280,6 +1282,34 @@ class RoutesApiTests(unittest.TestCase):
             self.assertAlmostEqual(retried['amount'], 700.0)
         finally:
             conn.close()
+
+
+class YahooSourceTests(unittest.TestCase):
+    def test_quote_parses_meta(self):
+        node = {'meta': {
+            'symbol': 'QQQM', 'regularMarketPrice': 250.5,
+            'chartPreviousClose': 248.0, 'longName': 'Invesco NASDAQ 100 ETF',
+        }}
+        with mock.patch.object(prices, '_yahoo_chart', return_value=node):
+            quote = prices.yahoo_quote('QQQM')
+        self.assertEqual(quote['price'], 250.5)
+        self.assertEqual(quote['prev_close'], 248.0)
+        self.assertEqual(quote['name'], 'Invesco NASDAQ 100 ETF')
+
+    def test_kline_maps_timestamps_to_exchange_dates(self):
+        tz = ZoneInfo('America/New_York')
+        stamps = [
+            int(datetime(2026, 11, 20, 9, 30, tzinfo=tz).timestamp()),
+            int(datetime(2026, 11, 23, 9, 30, tzinfo=tz).timestamp()),
+        ]
+        node = {
+            'meta': {'exchangeTimezoneName': 'America/New_York'},
+            'timestamp': stamps,
+            'indicators': {'quote': [{'close': [100.0, 101.5]}]},
+        }
+        with mock.patch.object(prices, '_yahoo_chart', return_value=node):
+            rows = prices.yahoo_kline('QQQM', '2026-11-20', '2026-11-24')
+        self.assertEqual(rows, [('2026-11-20', 100.0), ('2026-11-23', 101.5)])
 
 
 if __name__ == '__main__':

@@ -19,7 +19,7 @@ const TYPE_LABELS = {
 };
 const SOURCE_LABELS = { manual: '手动', import: '导入', dca: '定投', adjust: '修正' };
 const QUOTE_SOURCE_LABELS = {
-    eastmoney: '东方财富', fund_em: '基金净值', binance: 'Binance',
+    eastmoney: '东方财富', yahoo: 'Yahoo', fund_em: '基金净值', binance: 'Binance',
     manual: '手动', accrual: '按日计提',
 };
 const STATUS_LABELS = {
@@ -1334,7 +1334,7 @@ function openAssetModal(asset = null) {
     const a = asset || {};
     const markets = ['CN', 'US', 'HK', 'FUND_CN', 'CRYPTO', 'BANK', 'MANUAL'];
     const classes = ['stock', 'etf', 'fund', 'crypto', 'bank_wm', 'other'];
-    const sources = [['eastmoney', '东方财富'], ['fund_em', '基金净值'], ['binance', 'Binance'],
+    const sources = [['eastmoney', '东方财富'], ['yahoo', 'Yahoo'], ['fund_em', '基金净值'], ['binance', 'Binance'],
         ['manual', '手动价格'], ['accrual', '按日计提']];
     const html = `<form id="modalForm">
         <div class="form-grid">
@@ -1393,7 +1393,7 @@ function openAssetModal(asset = null) {
         fundNavCurrency = null;
         const market = $('#assetMarket').value;
         $('#assetCurrency').value = nativeCurrency(market) || 'CNY';
-        const source = { CN: 'eastmoney', US: 'eastmoney', HK: 'eastmoney', FUND_CN: 'fund_em', CRYPTO: 'binance', BANK: 'accrual', MANUAL: 'manual' };
+        const source = { CN: 'eastmoney', US: 'yahoo', HK: 'eastmoney', FUND_CN: 'fund_em', CRYPTO: 'binance', BANK: 'accrual', MANUAL: 'manual' };
         $('#assetSource').value = source[market] || 'manual';
         $('#assetValuation').value = market === 'BANK' ? 'accrual' : 'price';
         $('#assetClass').value = { FUND_CN: 'fund', CRYPTO: 'crypto', BANK: 'bank_wm' }[market] || 'stock';

@@ -118,6 +118,14 @@ YAHOO_HEADERS = {
 }
 
 
+def yahoo_symbol(symbol, market):
+    """Map an exchange symbol to the Yahoo Finance ticker."""
+    symbol = str(symbol).strip().upper()
+    if market == 'CN':
+        return symbol + ('.SS' if symbol[:1] in ('5', '6', '9') else '.SZ')
+    return symbol
+
+
 def _yahoo_chart(symbol, params):
     data = _get(YAHOO_CHART + symbol, headers=YAHOO_HEADERS, params=params).json()
     chart = data.get('chart') or {}
@@ -481,7 +489,7 @@ def sync_asset(conn, asset, full=False, start=None):
 
     if source in ('eastmoney', 'yahoo'):
         if source == 'yahoo':
-            key = asset.get('quote_key') or asset['symbol']
+            key = yahoo_symbol(asset['symbol'], asset.get('market'))
             kline_fn, quote_fn, bar_source = yahoo_kline, yahoo_quote, 'yahoo'
         else:
             key = resolve_quote_key(conn, asset)

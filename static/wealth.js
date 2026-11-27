@@ -1393,7 +1393,7 @@ function openAssetModal(asset = null) {
         fundNavCurrency = null;
         const market = $('#assetMarket').value;
         $('#assetCurrency').value = nativeCurrency(market) || 'CNY';
-        const source = { CN: 'eastmoney', US: 'yahoo', HK: 'eastmoney', FUND_CN: 'fund_em', CRYPTO: 'binance', BANK: 'accrual', MANUAL: 'manual' };
+        const source = { CN: 'yahoo', US: 'yahoo', HK: 'eastmoney', FUND_CN: 'fund_em', CRYPTO: 'binance', BANK: 'accrual', MANUAL: 'manual' };
         $('#assetSource').value = source[market] || 'manual';
         $('#assetValuation').value = market === 'BANK' ? 'accrual' : 'price';
         $('#assetClass').value = { FUND_CN: 'fund', CRYPTO: 'crypto', BANK: 'bank_wm' }[market] || 'stock';

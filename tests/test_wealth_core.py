@@ -1285,6 +1285,13 @@ class RoutesApiTests(unittest.TestCase):
 
 
 class YahooSourceTests(unittest.TestCase):
+    def test_symbol_mapping(self):
+        self.assertEqual(prices.yahoo_symbol('600519', 'CN'), '600519.SS')
+        self.assertEqual(prices.yahoo_symbol('513000', 'CN'), '513000.SS')
+        self.assertEqual(prices.yahoo_symbol('000001', 'CN'), '000001.SZ')
+        self.assertEqual(prices.yahoo_symbol('159915', 'CN'), '159915.SZ')
+        self.assertEqual(prices.yahoo_symbol('QQQM', 'US'), 'QQQM')
+
     def test_quote_parses_meta(self):
         node = {'meta': {
             'symbol': 'QQQM', 'regularMarketPrice': 250.5,

@@ -12,14 +12,14 @@ import akshare as ak
 from bs4 import BeautifulSoup
 
 
-def _find_col(df, suffix, qdii_codes=None):
+def _find_col(df, suffix, code_list=None):
     """在 DataFrame 列中查找以指定后缀结尾的列，优先选非空值最多的。"""
     candidates = [c for c in df.columns if c.endswith(suffix)]
     if not candidates:
         return None
-    if qdii_codes is None or len(candidates) == 1:
+    if code_list is None or len(candidates) == 1:
         return candidates[0]
-    qdii_mask = df['基金代码'].isin(qdii_codes)
+    qdii_mask = df['基金代码'].isin(code_list)
     return max(
         candidates,
         key=lambda c: df.loc[qdii_mask, c].notna().sum() + (df.loc[qdii_mask, c] != '').sum()
@@ -32,6 +32,57 @@ def _fetch_all_codes():
     qdii_df = all_funds_df[all_funds_df['基金类型'].astype(str).str.contains('QDII|海外股票', na=False)].copy()
     qdii_df.rename(columns={'基金代码': 'code'}, inplace=True)
     return [str(c) for c in qdii_df['code'].unique().tolist()]
+
+
+DV_TARGETS = (
+    '中证红利低波动指数',
+    '中证红利低波动100指数',
+    '标普中国A股大盘红利低波50指数',
+)
+DV_KEYWORD = '红利低波'
+_FUNDF10_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                  '(KHTML, like Gecko) Chrome/120.0 Safari/537.36',
+    'Referer': 'https://fundf10.eastmoney.com/',
+}
+
+
+def _fund_track_target(code):
+    """从东财基金概况页解析"跟踪标的"。"""
+    url = f'https://fundf10.eastmoney.com/jbgk_{code}.html'
+    for attempt in range(4):
+        try:
+            resp = requests.get(url, headers=_FUNDF10_HEADERS, timeout=12)
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            for cell in soup.find_all(['th', 'td']):
+                if cell.get_text(strip=True) in ('跟踪标的', '跟踪标的：'):
+                    value = cell.find_next(['td', 'span'])
+                    return value.get_text(strip=True) if value else ''
+        except Exception:
+            pass
+        time.sleep(0.5 + 0.5 * attempt)
+    return ''
+
+
+def _fetch_dlv_codes():
+    """红利低波基金：名称含关键词且跟踪三个目标指数之一的代码。"""
+    all_funds_df = ak.fund_name_em()
+    all_funds_df['基金代码'] = all_funds_df['基金代码'].astype(str)
+    hit = all_funds_df[all_funds_df['基金简称'].astype(str).str.contains(DV_KEYWORD, na=False)]
+    codes = []
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {executor.submit(_fund_track_target, c): c for c in hit['基金代码']}
+        for future in as_completed(futures):
+            if future.result() in DV_TARGETS:
+                codes.append(futures[future])
+    return sorted(codes)
+
+
+def fetch_all_dlv():
+    """全量采集红利低波基金数据（跟踪三个目标指数的场内/场外基金）。"""
+    codes = _fetch_dlv_codes()
+    print(f"  ✅ 红利低波清单: {len(codes)} 只", flush=True)
+    return fetch_all(codes=codes)
 
 
 def _fetch_fund_extra(codes):
@@ -469,25 +520,31 @@ def _fetch_exchange_prices(codes):
 
 
 
-def fetch_all():
-    """全量采集 QDII 基金数据，返回 list[dict]。
+def fetch_all(codes=None):
+    """全量采集基金数据，返回 list[dict]。
 
+    ``codes`` 为空时按 QDII 口径筛选；传入代码列表时只采集这些基金。
     返回字段: code, name, ftype, nav, acc_nav, ret_1y, ret_3y, ret_ann, est_date, upd_date
     """
-    print("📡 开始采集 QDII 基金数据...", flush=True)
+    print("📡 开始采集基金数据...", flush=True)
 
     all_funds_df = ak.fund_name_em()
-    qdii_df = all_funds_df[all_funds_df['基金类型'].astype(str).str.contains('QDII|海外股票', na=False)].copy()
-    qdii_df.rename(columns={'基金代码': 'code', '基金简称': 'name', '基金类型': 'ftype'}, inplace=True)
-    qdii_codes = qdii_df['code'].unique().tolist()
-    print(f"  ✅ 基金列表: 共 {len(qdii_codes)} 只 QDII 基金", flush=True)
+    all_funds_df.rename(columns={'基金代码': 'code', '基金简称': 'name', '基金类型': 'ftype'}, inplace=True)
+    all_funds_df['code'] = all_funds_df['code'].astype(str)
+    if codes is None:
+        list_df = all_funds_df[all_funds_df['ftype'].astype(str).str.contains('QDII|海外股票', na=False)].copy()
+    else:
+        wanted = {str(c) for c in codes}
+        list_df = all_funds_df[all_funds_df['code'].isin(wanted)].copy()
+    code_list = list_df['code'].unique().tolist()
+    print(f"  ✅ 基金列表: 共 {len(code_list)} 只", flush=True)
 
     # 1. 开放式基金最新净值
     print("  📡 获取场外基金最新净值...", flush=True)
     all_daily_df = ak.fund_open_fund_daily_em()
-    nav_col = _find_col(all_daily_df, '单位净值', qdii_codes)
-    acc_nav_col = _find_col(all_daily_df, '累计净值', qdii_codes)
-    open_nav = all_daily_df[all_daily_df['基金代码'].isin(qdii_codes)][
+    nav_col = _find_col(all_daily_df, '单位净值', code_list)
+    acc_nav_col = _find_col(all_daily_df, '累计净值', code_list)
+    open_nav = all_daily_df[all_daily_df['基金代码'].isin(code_list)][
         ['基金代码', nav_col, acc_nav_col]
     ].copy()
     open_nav.rename(columns={'基金代码': 'code', nav_col: 'nav', acc_nav_col: 'acc_nav'}, inplace=True)
@@ -497,7 +554,7 @@ def fetch_all():
     exch_sub = pd.DataFrame()
     try:
         exch_df = ak.fund_exchange_rank_em()
-        exch_sub = exch_df[exch_df['基金代码'].isin(qdii_codes)][
+        exch_sub = exch_df[exch_df['基金代码'].isin(code_list)][
             ['基金代码', '单位净值', '累计净值', '近1年', '近3年', '成立来', '成立日期', '日期']
         ].copy()
         exch_sub.rename(columns={
@@ -513,7 +570,7 @@ def fetch_all():
     rank_sub = pd.DataFrame()
     try:
         rank_df = ak.fund_open_fund_rank_em()
-        rank_sub = rank_df[rank_df['基金代码'].isin(qdii_codes)][
+        rank_sub = rank_df[rank_df['基金代码'].isin(code_list)][
             ['基金代码', '近1年', '近3年', '成立来']
         ].copy()
         rank_sub.rename(columns={
@@ -527,7 +584,7 @@ def fetch_all():
     print(f"  ✅ 场内基金 {len(exch_codes)} 只", flush=True)
 
     # 合并
-    final_df = pd.merge(qdii_df, open_nav, on='code', how='left')
+    final_df = pd.merge(list_df, open_nav, on='code', how='left')
     if not rank_sub.empty:
         final_df = pd.merge(final_df, rank_sub, on='code', how='left')
     if not exch_sub.empty:
@@ -540,11 +597,11 @@ def fetch_all():
 
     # 净值历史补充（成立日期 + 涨跌幅计算）
     print("  📡 获取净值历史（逐只，最慢环节）...", flush=True)
-    extra_data = _fetch_fund_extra(qdii_codes)
+    extra_data = _fetch_fund_extra(code_list)
 
     # 费用数据获取（自建请求：UA/Referer/timeout/重试，降并发防限流）
     print("  📡 获取基金费率...", flush=True)
-    fee_data = _fetch_fund_fees(qdii_codes)
+    fee_data = _fetch_fund_fees(code_list)
 
     # 填充 est_date
     final_df['est_date'] = final_df['code'].map(lambda c: extra_data[c]['est_date'] if extra_data.get(c) else None)
@@ -576,7 +633,7 @@ def fetch_all():
     print("  📡 获取官方累计收益率...", flush=True)
     cum_ret_data = {}
     pool = ThreadPoolExecutor(max_workers=1)
-    future = pool.submit(_fetch_cumulative_returns, qdii_codes)
+    future = pool.submit(_fetch_cumulative_returns, code_list)
     try:
         cum_ret_data = future.result(timeout=180)
     except Exception:
@@ -594,7 +651,7 @@ def fetch_all():
 
     # 申购状态和日累计限额
     print("  📡 获取申购状态...", flush=True)
-    purchase_data = _fetch_fund_purchase_status(qdii_codes)
+    purchase_data = _fetch_fund_purchase_status(code_list)
     final_df['purchase_status'] = final_df['code'].map(
         lambda c: purchase_data[c]['purchase_status'] if purchase_data.get(c) else None)
     final_df['daily_limit'] = final_df['code'].map(

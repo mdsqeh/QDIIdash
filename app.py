@@ -33,7 +33,7 @@ load_dotenv(Path(__file__).resolve().parent / '.env')
 from flask import Flask, current_app, g, jsonify, render_template, request
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from fetcher import fetch_all, _fetch_incremental, _fetch_all_codes
+from fetcher import fetch_all, fetch_all_dlv, _fetch_incremental, _fetch_all_codes
 from quota import (
     init_quota_db,
     register_quota,
@@ -125,6 +125,30 @@ def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS funds (
+                code        TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                ftype       TEXT,
+                market      TEXT DEFAULT '场外',
+                nav         TEXT,
+                acc_nav     TEXT,
+                ret_1y      REAL,
+                ret_2y      REAL,
+                ret_3y      REAL,
+                ret_4y      REAL,
+                ret_5y      REAL,
+                ret_10y     REAL,
+                ret_ann     REAL,
+                total_ret   REAL,
+                est_date    TEXT,
+                mgmt_fee    REAL,
+                cust_fee    REAL,
+                sale_fee    REAL,
+                purchase_status TEXT,
+                daily_limit REAL,
+                premium_discount REAL,
+                upd_date    TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS dlv_funds (
                 code        TEXT PRIMARY KEY,
                 name        TEXT NOT NULL,
                 ftype       TEXT,
@@ -385,6 +409,86 @@ def _do_fetch_incremental():
         print(f"❌ 增量更新失败（{elapsed:.0f}s）: {e}", flush=True)
 
 
+def _do_fetch_dlv():
+    """后台全量采集红利低波基金数据。"""
+    if not _fetch_lock.acquire(blocking=False):
+        print("⏭️ 采集已在运行，跳过红利低波全量", flush=True)
+        return
+
+    print("🚀 红利低波全量采集开始...", flush=True)
+    t_start = datetime.now(timezone.utc)
+    try:
+        records = fetch_all_dlv()
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.executemany(
+                """INSERT OR REPLACE INTO dlv_funds
+                   (code, name, ftype, market, nav, acc_nav, ret_1y, ret_2y, ret_3y, ret_4y, ret_5y, ret_10y, ret_ann, total_ret, est_date, mgmt_fee, cust_fee, sale_fee, purchase_status, daily_limit, premium_discount, daily_change, upd_date)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [(
+                    r['code'], r['name'], r.get('ftype'),
+                    r.get('market', '场外'),
+                    r.get('nav'), r.get('acc_nav'),
+                    r.get('ret_1y'), r.get('ret_2y'), r.get('ret_3y'),
+                    r.get('ret_4y'), r.get('ret_5y'), r.get('ret_10y'),
+                    r.get('ret_ann'),
+                    r.get('total_ret'),
+                    r.get('est_date'),
+                    r.get('mgmt_fee'), r.get('cust_fee'), r.get('sale_fee'),
+                    r.get('purchase_status'), r.get('daily_limit'),
+                    r.get('premium_discount'),
+                    r.get('daily_change'),
+                    r.get('upd_date', ''),
+                ) for r in records]
+            )
+            conn.commit()
+        elapsed = (datetime.now(timezone.utc) - t_start).total_seconds()
+        print(f"✅ 红利低波全量采集完成，耗时 {elapsed:.0f}s，共 {len(records)} 条", flush=True)
+        with open(_FULL_FETCH_FLAG, 'w') as f:
+            f.write(datetime.now(timezone.utc).isoformat())
+    except Exception as e:
+        elapsed = (datetime.now(timezone.utc) - t_start).total_seconds()
+        print(f"❌ 红利低波全量采集失败（{elapsed:.0f}s）: {e}", flush=True)
+    finally:
+        _fetch_lock.release()
+
+
+def _do_fetch_incremental_dlv():
+    """红利低波增量更新：只更新已有基金的净值、日增长率、折溢价率、申购状态、日额度。"""
+    try:
+        with open(_FULL_FETCH_FLAG) as f:
+            flag_date = f.read().strip()
+        if flag_date == date.today().isoformat():
+            print("⏭️ 今日已是全量更新日，跳过红利低波增量", flush=True)
+            return
+    except FileNotFoundError:
+        pass
+
+    print("⚡ 红利低波增量更新开始...", flush=True)
+    t_start = datetime.now(timezone.utc)
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            existing_codes = [row[0] for row in conn.execute("SELECT code FROM dlv_funds").fetchall()]
+            records = _fetch_incremental(existing_codes) if existing_codes else []
+            if records:
+                conn.executemany(
+                    """UPDATE dlv_funds
+                       SET nav = :nav,
+                           daily_change = :daily_change,
+                           premium_discount = :premium_discount,
+                           purchase_status = :purchase_status,
+                           daily_limit = :daily_limit,
+                           upd_date = :upd_date
+                       WHERE code = :code""",
+                    records
+                )
+            conn.commit()
+        elapsed = (datetime.now(timezone.utc) - t_start).total_seconds()
+        print(f"✅ 红利低波增量更新完成，耗时 {elapsed:.0f}s，共 {len(records)} 只", flush=True)
+    except Exception as e:
+        elapsed = (datetime.now(timezone.utc) - t_start).total_seconds()
+        print(f"❌ 红利低波增量更新失败（{elapsed:.0f}s）: {e}", flush=True)
+
+
 # ── 日额度监控（高频检测） ─────────────────────────────────────
 
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '')
@@ -432,8 +536,7 @@ def index():
     return render_template('index.html')
 
 
-@app.route('/api/funds')
-def api_funds():
+def _funds_payload(table):
     """返回基金列表，支持搜索 / 排序 / 分页。"""
     db = get_db()
     search = request.args.get('search', '').strip()
@@ -474,13 +577,13 @@ def api_funds():
         where = "WHERE " + " AND ".join(conditions)
 
     # 总记录数
-    count_row = db.execute(f"SELECT COUNT(*) AS cnt FROM funds {where}", params).fetchone()
+    count_row = db.execute(f"SELECT COUNT(*) AS cnt FROM {table} {where}", params).fetchone()
     total = count_row['cnt']
 
     # 分页数据
     offset = (page - 1) * per_page
     rows = db.execute(
-        f"SELECT * FROM funds {where} ORDER BY {sort} {order} LIMIT ? OFFSET ?",
+        f"SELECT * FROM {table} {where} ORDER BY {sort} {order} LIMIT ? OFFSET ?",
         params + [per_page, offset]
     ).fetchall()
 
@@ -492,12 +595,21 @@ def api_funds():
     })
 
 
-@app.route('/api/stats')
-def api_stats():
+@app.route('/api/funds')
+def api_funds():
+    return _funds_payload('funds')
+
+
+@app.route('/api/dlv/funds')
+def api_dlv_funds():
+    return _funds_payload('dlv_funds')
+
+
+def _stats_payload(table):
     """返回全量统计：总数、近1年正收益数、年化>20%基金数。"""
     db = get_db()
-    total = db.execute("SELECT COUNT(*) AS cnt FROM funds").fetchone()['cnt']
-    pos = db.execute("""SELECT COUNT(*) AS cnt FROM funds
+    total = db.execute(f"SELECT COUNT(*) AS cnt FROM {table}").fetchone()['cnt']
+    pos = db.execute(f"""SELECT COUNT(*) AS cnt FROM {table}
         WHERE ret_1y >= 0
           AND (ret_2y IS NULL OR ret_2y >= 0)
           AND (ret_3y IS NULL OR ret_3y >= 0)
@@ -505,8 +617,18 @@ def api_stats():
           AND (ret_5y IS NULL OR ret_5y >= 0)
           AND (ret_10y IS NULL OR ret_10y >= 0)""").fetchone()['cnt']
     ann_threshold = request.args.get('ann_threshold', 20, type=float)
-    ann_gt = db.execute("SELECT COUNT(*) AS cnt FROM funds WHERE ret_ann > ?", (ann_threshold,)).fetchone()['cnt']
+    ann_gt = db.execute(f"SELECT COUNT(*) AS cnt FROM {table} WHERE ret_ann > ?", (ann_threshold,)).fetchone()['cnt']
     return jsonify({'total': total, 'pos_1y': pos, 'ret_ann_gt_20': ann_gt})
+
+
+@app.route('/api/stats')
+def api_stats():
+    return _stats_payload('funds')
+
+
+@app.route('/api/dlv/stats')
+def api_dlv_stats():
+    return _stats_payload('dlv_funds')
 
 
 def _dashboard_db():
@@ -933,13 +1055,15 @@ def _start_scheduler():
     scheduler = BackgroundScheduler(timezone='Asia/Shanghai')
     scheduler.add_job(_do_fetch, 'cron', day=1, hour=21, minute=0, id='monthly_fetch')
     scheduler.add_job(_do_fetch_incremental, 'cron', hour=21, minute=0, id='daily_incremental')
+    scheduler.add_job(_do_fetch_dlv, 'cron', day=1, hour=21, minute=30, id='dlv_monthly_fetch')
+    scheduler.add_job(_do_fetch_incremental_dlv, 'cron', hour=21, minute=30, id='dlv_daily_incremental')
     scheduler.add_job(_do_check_quota, 'cron', day_of_week='mon-fri', hour='9-19', minute=0, id='quota_check')
     scheduler.add_job(_do_check_quota, 'cron', day_of_week='mon-fri', hour=21, minute=5, id='quota_check_after_fetch')
     scheduler.add_job(_do_quota_report, 'cron', hour=17, minute=30, id='quota_daily_report')
     register_quota_jobs(scheduler, lambda: DB_PATH)
     register_wealth_jobs(scheduler)
     scheduler.start()
-    print("📅 定时任务已启动：每月1号 21:00 全量采集，每日 21:00 增量更新，额度监控交易日 9:00-19:00 每小时及 21:05，额度公告每日 8:10/12:10/17:10，额度日报交易日 17:30")
+    print("📅 定时任务已启动：每月1号 21:00 全量采集，每日 21:00 增量更新，红利低波每月1号/每日 21:30，额度监控交易日 9:00-19:00 每小时及 21:05，额度公告每日 8:10/12:10/17:10，额度日报交易日 17:30")
 
 
 if __name__ == '__main__':
@@ -957,6 +1081,14 @@ if __name__ == '__main__':
         threading.Thread(target=_do_fetch, daemon=True).start()
     else:
         print("⏭️ QDII 数据已存在，跳过启动采集")
+
+    with sqlite3.connect(DB_PATH) as conn:
+        has_dlv = conn.execute("SELECT COUNT(*) FROM dlv_funds").fetchone()[0] > 0
+    if not has_dlv:
+        print("🔄 红利低波数据为空，启动后采集...")
+        threading.Thread(target=_do_fetch_dlv, daemon=True).start()
+    else:
+        print("⏭️ 红利低波数据已存在，跳过启动采集")
 
     with sqlite3.connect(DB_PATH) as conn:
         has_quota_run = conn.execute("SELECT COUNT(*) FROM quota_run").fetchone()[0] > 0

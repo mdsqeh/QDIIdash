@@ -170,5 +170,27 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(response.get_json(), {'codes': ['513100']})
 
 
+    def add_dlv_fund(self, code, name=None, ret_1y=None):
+        with closing(self._conn()) as conn, conn:
+            conn.execute(
+                'INSERT INTO dlv_funds (code, name, ret_1y, upd_date) VALUES (?, ?, ?, ?)',
+                (code, name or f'红利{code}', ret_1y, '2026-01-01'),
+            )
+
+    def test_dlv_funds_and_stats_are_separate_from_qdii(self):
+        self.add_fund('513100')
+        self.add_dlv_fund('512890', ret_1y=12.0)
+
+        dlv = self.client.get('/api/dlv/funds').get_json()
+        self.assertEqual([f['code'] for f in dlv['funds']], ['512890'])
+
+        stats = self.client.get('/api/dlv/stats').get_json()
+        self.assertEqual(stats['total'], 1)
+        self.assertEqual(stats['pos_1y'], 1)
+
+        qdii = self.client.get('/api/funds').get_json()
+        self.assertEqual([f['code'] for f in qdii['funds']], ['513100'])
+
+
 if __name__ == '__main__':
     unittest.main()

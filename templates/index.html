@@ -597,6 +597,7 @@ keywords: QDII基金, 折溢价率, 基金监控, 日额度, 纳斯达克100, �
 
     <div class="tabs" id="tabs">
         <button class="tab-btn active" id="tabQdii" onclick="switchTab('qdii')">QDII 基金</button>
+        <button class="tab-btn" id="tabDlv" onclick="switchTab('dlv')">红利低波</button>
         <button class="tab-btn" id="tabQuota" onclick="switchTab('quota')">额度监测 <span id="quotaUnreadBadge" style="display:none;background:var(--red);color:#fff;border-radius:50%;padding:1px 5px;font-size:0.7rem;margin-left:4px">0</span></button>
     </div>
 
@@ -786,12 +787,13 @@ const TAB_CONFIG = {
         dataSource: '...',
         footer: '每月1号全量，每日21:00增量',
         isDataTab: true,
+        presets: true,
         columns: [
             {key:'_pos', label:'持仓', thStyle:'width:36px;text-align:center;cursor:default', tdStyle:'text-align:center;padding:4px', render:(r)=>{const p=state.positions.includes(r.code);return '<span class="star star-static '+(p?'star-on':'star-off')+'" title="来自财富管理持仓">'+(p?'💰':'○')+'</span>';}},
             {key:'_star', label:'自选', thStyle:'width:36px;text-align:center;cursor:default', tdStyle:'text-align:center;padding:4px', render:(r)=>{const w=state.watchlist.includes(r.code);return '<span class="star '+(w?'star-on':'star-off')+'" onclick="event.stopPropagation();toggleWatch(\''+r.code+'\')">'+(w?'⊡':'☐')+'</span>';}},
             {key:'_rating', label:'自评级', thStyle:'width:90px;text-align:center;cursor:default', tdStyle:'text-align:center;padding:4px;white-space:nowrap', render:(r)=>{const rt=state.ratings[r.code]||0;let h='';for(let i=1;i<=5;i++){h+='<span class="rstar '+(i<=rt?'rstar-on':'rstar-off')+'" onclick="event.stopPropagation();setRating(\''+r.code+'\','+i+')">'+(i<=rt?'★':'☆')+'</span>';}return h;}},
             {key:'code',     label:'代码',     thStyle:'',             tdClass:'',           tdStyle:'font-family:var(--font-display);font-weight:600;color:var(--accent)', render:(r)=>`<a class="code-link" href="https://fund.eastmoney.com/${r.code}.html" target="_blank" rel="noopener noreferrer">${r.code}</a>`},
-            {key:'name',     label:'简称',     thStyle:'',             tdClass:'',           tdStyle:'font-weight:500', render:(r)=>`${r.name} <span class="badge badge-qdii">QDII</span>`},
+            {key:'name',     label:'简称',     thStyle:'',             tdClass:'',           tdStyle:'font-weight:500', render:(r)=>`${r.name}${/QDII|海外/.test(r.ftype||'')?' <span class="badge badge-qdii">QDII</span>':''}`},
             {key:'ftype',    label:'类型',     thStyle:'',             tdClass:'',           tdStyle:'', render:(r)=>r.ftype||'-'},
             {key:'market',   label:'市场',     thStyle:'',             tdClass:'',           tdStyle:'', render:(r)=>r.market==='场内'?'<span class="badge badge-exchange">场内</span>':'<span class="badge badge-otc">场外</span>'},
             {key:'nav',      label:'最新净值', thStyle:'',             tdClass:'',           tdStyle:'font-family:var(--font-display)', render:(r)=>fmtNum(r.nav)},
@@ -852,6 +854,21 @@ const TAB_CONFIG = {
         statsLabels: [],
         statsFilters: [],
     },
+};
+
+// 红利低波 Tab：复用 QDII 的列/排序配置，指向独立数据集
+TAB_CONFIG.dlv = {
+    api: '/api/dlv/funds',
+    statsApi: '/api/dlv/stats',
+    dataSource: '东方财富',
+    footer: '每月1号 / 每日 21:30 更新',
+    isDataTab: true,
+    presets: false,
+    columns: TAB_CONFIG.qdii.columns,
+    sortOptions: TAB_CONFIG.qdii.sortOptions,
+    statsKeys: ['total', 'pos_1y', 'ret_ann_gt_20'],
+    statsLabels: ['全部', '成立以来每年正收益', '年化 > 20%'],
+    statsFilters: [null, 'pos_1y', 'ann_gt'],
 };
 
 // ═══════════════════════════════════════════════════
@@ -1007,15 +1024,18 @@ function switchTab(tab, skipReset) {
     if (dataSourceEl) dataSourceEl.textContent = cfg.dataSource;
     document.getElementById('fetchStatus').textContent = cfg.footer;
 
-    // 隐藏/显示 QDII 专用元素
-    const isQdii = tab === 'qdii';
-    document.getElementById('statBar').style.display = isQdii ? '' : 'none';
-    document.querySelector('.toolbar').style.display = isQdii ? '' : 'none';
-    document.querySelector('.table-wrap').style.display = isQdii ? '' : 'none';
-    document.getElementById('cardList').style.display = isQdii ? '' : 'none';
-    document.getElementById('pagination').style.display = isQdii ? '' : 'none';
+    // 隐藏/显示数据表相关元素
+    const isDataTab = cfg.isDataTab;
+    document.getElementById('statBar').style.display = isDataTab ? '' : 'none';
+    document.querySelector('.toolbar').style.display = isDataTab ? '' : 'none';
+    document.querySelector('.table-wrap').style.display = isDataTab ? '' : 'none';
+    document.getElementById('cardList').style.display = isDataTab ? '' : 'none';
+    document.getElementById('pagination').style.display = isDataTab ? '' : 'none';
     document.getElementById('quotaPanel').className = 'quota-panel' + (tab === 'quota' ? ' active' : '');
-    if (isQdii) {
+    // 纳斯达克100 / 标普500 预设筛选 chip 仅 QDII 显示
+    document.getElementById('statNasdaq100').style.display = cfg.presets ? '' : 'none';
+    document.getElementById('statSp500').style.display = cfg.presets ? '' : 'none';
+    if (isDataTab) {
         const sel = document.getElementById('mobileSort');
         sel.innerHTML = cfg.sortOptions.map(o => `<option value="${o.value}">${o.label}</option>`).join('');
         sel.value = state.sort;
@@ -1213,9 +1233,11 @@ function updateStats(stats) {
     if (totalCountEl) totalCountEl.textContent = stats ? stats[cfg.statsKeys[0]] : '-';
     document.getElementById('cntPos').textContent = stats ? stats[cfg.statsKeys[1]] : '-';
     document.getElementById('cntThird').textContent = stats ? stats[cfg.statsKeys[2]] : '-';
-    const statDataset = state.statDataset || [];
-    document.getElementById('cntNasdaq100').textContent = statDataset.length ? statDataset.filter(r => matchesPresetFilter(r, 'nasdaq100')).length : '-';
-    document.getElementById('cntSp500').textContent = statDataset.length ? statDataset.filter(r => matchesPresetFilter(r, 'sp500')).length : '-';
+    if (cfg.presets) {
+        const statDataset = state.statDataset || [];
+        document.getElementById('cntNasdaq100').textContent = statDataset.length ? statDataset.filter(r => matchesPresetFilter(r, 'nasdaq100')).length : '-';
+        document.getElementById('cntSp500').textContent = statDataset.length ? statDataset.filter(r => matchesPresetFilter(r, 'sp500')).length : '-';
+    }
 
     if (state.funds.length > 0 && state.funds[0].upd_date) {
         const updateDateEl = document.getElementById('updateDate');
@@ -1224,8 +1246,10 @@ function updateStats(stats) {
     document.getElementById('statAll').classList.toggle('active', state.filter === null);
     document.getElementById('statPos1y').classList.toggle('active', state.filter === cfg.statsFilters[1]);
     document.getElementById('statThird').classList.toggle('active', state.filter === cfg.statsFilters[2]);
-    document.getElementById('statNasdaq100').classList.toggle('active', state.filter === 'nasdaq100');
-    document.getElementById('statSp500').classList.toggle('active', state.filter === 'sp500');
+    if (cfg.presets) {
+        document.getElementById('statNasdaq100').classList.toggle('active', state.filter === 'nasdaq100');
+        document.getElementById('statSp500').classList.toggle('active', state.filter === 'sp500');
+    }
     updateWatchlistBtn();
 }
 

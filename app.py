@@ -153,6 +153,7 @@ def init_db():
                 name        TEXT NOT NULL,
                 ftype       TEXT,
                 market      TEXT DEFAULT '场外',
+                track_index TEXT,
                 nav         TEXT,
                 acc_nav     TEXT,
                 ret_1y      REAL,
@@ -248,6 +249,12 @@ def init_db():
     try:
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute("ALTER TABLE dlv_funds ADD COLUMN daily_change REAL")
+    except Exception:
+        pass
+
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("ALTER TABLE dlv_funds ADD COLUMN track_index TEXT")
     except Exception:
         pass
 
@@ -429,11 +436,12 @@ def _do_fetch_dlv():
         with sqlite3.connect(DB_PATH) as conn:
             conn.executemany(
                 """INSERT OR REPLACE INTO dlv_funds
-                   (code, name, ftype, market, nav, acc_nav, ret_1y, ret_2y, ret_3y, ret_4y, ret_5y, ret_10y, ret_ann, total_ret, est_date, mgmt_fee, cust_fee, sale_fee, purchase_status, daily_limit, premium_discount, daily_change, upd_date)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (code, name, ftype, market, track_index, nav, acc_nav, ret_1y, ret_2y, ret_3y, ret_4y, ret_5y, ret_10y, ret_ann, total_ret, est_date, mgmt_fee, cust_fee, sale_fee, purchase_status, daily_limit, premium_discount, daily_change, upd_date)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [(
                     r['code'], r['name'], r.get('ftype'),
                     r.get('market', '场外'),
+                    r.get('track_index'),
                     r.get('nav'), r.get('acc_nav'),
                     r.get('ret_1y'), r.get('ret_2y'), r.get('ret_3y'),
                     r.get('ret_4y'), r.get('ret_5y'), r.get('ret_10y'),
@@ -543,7 +551,7 @@ def index():
     return render_template('index.html')
 
 
-def _funds_payload(table):
+def _funds_payload(table, extra_sort=()):
     """返回基金列表，支持搜索 / 排序 / 分页。"""
     db = get_db()
     search = request.args.get('search', '').strip()
@@ -552,7 +560,7 @@ def _funds_payload(table):
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 50, type=int)
 
-    allowed_sort = {'code', 'name', 'ftype', 'nav', 'acc_nav', 'ret_1y', 'ret_2y', 'ret_3y', 'ret_4y', 'ret_5y', 'ret_10y', 'ret_ann', 'total_ret', 'est_date', 'upd_date', 'market', 'mgmt_fee', 'cust_fee', 'sale_fee', 'purchase_status', 'daily_limit', 'premium_discount', 'daily_change'}
+    allowed_sort = {'code', 'name', 'ftype', 'nav', 'acc_nav', 'ret_1y', 'ret_2y', 'ret_3y', 'ret_4y', 'ret_5y', 'ret_10y', 'ret_ann', 'total_ret', 'est_date', 'upd_date', 'market', 'mgmt_fee', 'cust_fee', 'sale_fee', 'purchase_status', 'daily_limit', 'premium_discount', 'daily_change'} | set(extra_sort)
     if sort not in allowed_sort:
         sort = 'code'
     if order not in ('asc', 'desc'):
@@ -609,7 +617,7 @@ def api_funds():
 
 @app.route('/api/dlv/funds')
 def api_dlv_funds():
-    return _funds_payload('dlv_funds')
+    return _funds_payload('dlv_funds', extra_sort={'track_index'})
 
 
 def _stats_payload(table):

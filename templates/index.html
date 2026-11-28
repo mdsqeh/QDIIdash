@@ -856,7 +856,8 @@ const TAB_CONFIG = {
     },
 };
 
-// 红利低波 Tab：复用 QDII 的列/排序配置，指向独立数据集
+// 红利低波 Tab：复用 QDII 的列/排序配置，额外增加"指数"列
+const DV_INDEX_COLUMN = {key:'track_index', label:'指数', thStyle:'', tdClass:'', tdStyle:'', render:(r)=>r.track_index||'-'};
 TAB_CONFIG.dlv = {
     api: '/api/dlv/funds',
     statsApi: '/api/dlv/stats',
@@ -864,12 +865,13 @@ TAB_CONFIG.dlv = {
     footer: '每月1号 / 每日 21:30 更新',
     isDataTab: true,
     presets: false,
-    columns: TAB_CONFIG.qdii.columns,
-    sortOptions: TAB_CONFIG.qdii.sortOptions,
+    columns: TAB_CONFIG.qdii.columns.slice(),
+    sortOptions: TAB_CONFIG.qdii.sortOptions.concat([{value:'track_index', label:'指数'}]),
     statsKeys: ['total', 'pos_1y', 'ret_ann_gt_20'],
     statsLabels: ['全部', '成立以来每年正收益', '年化 > 20%'],
     statsFilters: [null, 'pos_1y', 'ann_gt'],
 };
+TAB_CONFIG.dlv.columns.splice(5, 0, DV_INDEX_COLUMN);
 
 // ═══════════════════════════════════════════════════
 // State

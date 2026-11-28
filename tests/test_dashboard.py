@@ -181,7 +181,9 @@ class DashboardTests(unittest.TestCase):
         with closing(self._conn()) as conn:
             def columns(table):
                 return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
-            self.assertEqual(columns('dlv_funds'), columns('funds'))
+            # dlv_funds 复用 funds 全部列，并额外增加 track_index（跟踪指数短标签）。
+            self.assertTrue(columns('funds').issubset(columns('dlv_funds')))
+            self.assertIn('track_index', columns('dlv_funds'))
 
     def test_dlv_funds_and_stats_are_separate_from_qdii(self):
         self.add_fund('513100')

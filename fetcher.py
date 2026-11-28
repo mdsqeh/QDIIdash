@@ -40,11 +40,11 @@ def _fetch_all_codes():
     return [str(c) for c in qdii_df['code'].unique().tolist()]
 
 
-DV_TARGETS = (
-    '中证红利低波动指数',
-    '中证红利低波动100指数',
-    '标普中国A股大盘红利低波50指数',
-)
+DV_TARGET_LABELS = {
+    '中证红利低波动指数': '红利低波',
+    '中证红利低波动100指数': '红利低波动100',
+    '标普中国A股大盘红利低波50指数': '标普红利低波50',
+}
 DV_KEYWORD = '红利低波'
 _FUNDF10_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -70,25 +70,29 @@ def _fund_track_target(code):
     return ''
 
 
-def _fetch_dlv_codes():
-    """红利低波基金：名称含关键词且跟踪三个目标指数之一的代码。"""
+def _fetch_dlv_map():
+    """红利低波基金：名称含关键词且跟踪三个目标指数之一，返回 {代码: 指数短标签}。"""
     all_funds_df = ak.fund_name_em()
     all_funds_df['基金代码'] = all_funds_df['基金代码'].astype(str)
     hit = all_funds_df[all_funds_df['基金简称'].astype(str).str.contains(DV_KEYWORD, na=False)]
-    codes = []
+    result = {}
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {executor.submit(_fund_track_target, c): c for c in hit['基金代码']}
         for future in as_completed(futures):
-            if future.result() in DV_TARGETS:
-                codes.append(futures[future])
-    return sorted(codes)
+            label = DV_TARGET_LABELS.get(future.result())
+            if label:
+                result[futures[future]] = label
+    return result
 
 
 def fetch_all_dlv():
     """全量采集红利低波基金数据（跟踪三个目标指数的场内/场外基金）。"""
-    codes = _fetch_dlv_codes()
-    print(f"  ✅ 红利低波清单: {len(codes)} 只", flush=True)
-    return fetch_all(codes=codes)
+    labels = _fetch_dlv_map()
+    print(f"  ✅ 红利低波清单: {len(labels)} 只", flush=True)
+    records = fetch_all(codes=list(labels))
+    for record in records:
+        record['track_index'] = labels.get(record['code'])
+    return records
 
 
 def _fetch_fund_extra(codes):

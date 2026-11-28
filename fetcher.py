@@ -119,12 +119,19 @@ def _fetch_fund_extra(codes):
             merged = pd.merge(merged, merged_unit, on='净值日期', how='inner')
             merged = merged.sort_values('净值日期').reset_index(drop=True)
 
-            merged['gap'] = merged['acc_nav'] - merged['unit_nav']
-            merged['gap_change'] = merged['gap'].diff()
+            # 拆分归一化：份额拆分会使"单位净值"突变而"累计净值"不变，导致
+            # 累计净值/单位净值 的比值跳变(如 1:2 拆分后恒等于 2)。用比值跳变
+            # 识别拆分(单次分红跳变 <15%,拆分 >30%)，得到累计拆分因子。
+            ratio = merged['acc_nav'] / merged['unit_nav']
+            ratio_step = ratio / ratio.shift(1)
+            merged['split_factor'] = ratio_step.where(ratio_step > 1.3, 1.0).fillna(1.0).cumprod()
+            # 累计每份分红(当前份额口径) = 累计净值 / 拆分因子 - 单位净值
+            cum_div = merged['acc_nav'] / merged['split_factor'] - merged['unit_nav']
+            merged['div'] = cum_div.diff().clip(lower=0)
 
             est_date = str(merged['净值日期'].iloc[0].date())
 
-            # 分红再投资法计算 ret_1y / ret_3y
+            # 分红再投资法(拆分安全)计算各区间收益率
             def reinvested_ret(start_date, end_date):
                 mask = (merged['净值日期'] >= start_date) & (merged['净值日期'] <= end_date)
                 sub = merged[mask]
@@ -137,15 +144,19 @@ def _fetch_fund_extra(codes):
                     return None
 
                 units = 1.0
-                for i in range(1, len(sub)):
-                    gc = sub['gap_change'].iloc[i]
+                for i in range(len(sub)):
                     u = sub['unit_nav'].iloc[i]
-                    # 阈值 0.001：正常分红单次约 0.006~0.14，噪声约 1e-16
-                    if pd.notna(gc) and gc > 0.001 and pd.notna(u) and u > 0:
-                        div_per_unit = gc
-                        total_div = div_per_unit * units
-                        new_units = total_div / u
-                        units += new_units
+                    if i == 0 or pd.isna(u) or u <= 0:
+                        continue
+                    # 拆分：份额按比例放大(净值已同步下调)
+                    sf = sub['split_factor'].iloc[i]
+                    sf_prev = sub['split_factor'].iloc[i - 1]
+                    if pd.notna(sf) and pd.notna(sf_prev) and sf_prev > 0:
+                        units *= sf / sf_prev
+                    # 分红：阈值 0.001(正常分红约 0.006~0.14，噪声约 1e-16)，等值再投资
+                    d = sub['div'].iloc[i]
+                    if pd.notna(d) and d > 0.001:
+                        units += units * d / u
 
                 final_val = sub['unit_nav'].iloc[-1] * units
                 return round((final_val / start_unit - 1) * 100, 2)
@@ -566,11 +577,11 @@ def fetch_all(codes=None):
     try:
         exch_df = ak.fund_exchange_rank_em()
         exch_sub = exch_df[exch_df['基金代码'].isin(code_list)][
-            ['基金代码', '单位净值', '累计净值', '近1年', '近3年', '成立来', '成立日期', '日期']
+            ['基金代码', '单位净值', '累计净值', '近1年', '近2年', '近3年', '成立来', '成立日期', '日期']
         ].copy()
         exch_sub.rename(columns={
             '基金代码': 'code', '单位净值': 'nav_ex', '累计净值': 'acc_nav_ex',
-            '近1年': 'ret_1y_ex', '近3年': 'ret_3y_ex', '成立来': 'ret_ann_ex',
+            '近1年': 'ret_1y_ex', '近2年': 'ret_2y_ex', '近3年': 'ret_3y_ex', '成立来': 'ret_ann_ex',
             '成立日期': 'est_date', '日期': 'upd_date'
         }, inplace=True)
     except Exception:
@@ -582,10 +593,11 @@ def fetch_all(codes=None):
     try:
         rank_df = ak.fund_open_fund_rank_em()
         rank_sub = rank_df[rank_df['基金代码'].isin(code_list)][
-            ['基金代码', '近1年', '近3年', '成立来']
+            ['基金代码', '近1年', '近2年', '近3年', '成立来']
         ].copy()
         rank_sub.rename(columns={
-            '基金代码': 'code', '近1年': 'ret_1y_rank', '近3年': 'ret_3y_rank', '成立来': 'ret_ann_rank'
+            '基金代码': 'code', '近1年': 'ret_1y_rank', '近2年': 'ret_2y_rank',
+            '近3年': 'ret_3y_rank', '成立来': 'ret_ann_rank'
         }, inplace=True)
     except Exception:
         pass
@@ -622,21 +634,20 @@ def fetch_all(codes=None):
         final_df['nav'] = final_df['nav'].fillna(final_df['nav_ex'])
         final_df['acc_nav'] = final_df['acc_nav'].fillna(final_df['acc_nav_ex'])
 
-    # ret_1y/ret_3y：交易所排名（净值回报）→ 场外排名 → extra_data 兜底
+    # ret_1y/ret_2y/ret_3y：交易所排名（净值回报）→ 场外排名 → extra_data 兜底
     # 场内基金用交易所排名数据（基于净值计算，非交易价格）
     if not rank_sub.empty:
-        final_df['ret_1y'] = pd.to_numeric(final_df['ret_1y_rank'], errors='coerce')
-        final_df['ret_3y'] = pd.to_numeric(final_df['ret_3y_rank'], errors='coerce')
+        for yr, col in [('ret_1y', 'ret_1y_rank'), ('ret_2y', 'ret_2y_rank'), ('ret_3y', 'ret_3y_rank')]:
+            final_df[yr] = pd.to_numeric(final_df[col], errors='coerce')
     if not exch_sub.empty:
         m = final_df['code'].isin(exch_codes)
-        final_df.loc[m, 'ret_1y'] = pd.to_numeric(final_df.loc[m, 'ret_1y_ex'], errors='coerce')
-        final_df.loc[m, 'ret_3y'] = pd.to_numeric(final_df.loc[m, 'ret_3y_ex'], errors='coerce')
-    final_df['ret_1y'] = final_df['ret_1y'].fillna(
-        final_df['code'].map(lambda c: extra_data[c]['ret_1y'] if extra_data.get(c) else None))
-    final_df['ret_3y'] = final_df['ret_3y'].fillna(
-        final_df['code'].map(lambda c: extra_data[c]['ret_3y'] if extra_data.get(c) else None))
+        for yr, col in [('ret_1y', 'ret_1y_ex'), ('ret_2y', 'ret_2y_ex'), ('ret_3y', 'ret_3y_ex')]:
+            final_df.loc[m, yr] = pd.to_numeric(final_df.loc[m, col], errors='coerce')
+    for yr in ['ret_1y', 'ret_2y', 'ret_3y']:
+        final_df[yr] = final_df[yr].fillna(
+            final_df['code'].map(lambda c, y=yr: extra_data[c][y] if extra_data.get(c) else None))
 
-    for yr in ['ret_2y', 'ret_4y', 'ret_5y', 'ret_10y']:
+    for yr in ['ret_4y', 'ret_5y', 'ret_10y']:
         final_df[yr] = final_df['code'].map(lambda c, y=yr: extra_data[c][y] if extra_data.get(c) else None)
 
     # total_ret：优先使用官方累计收益率 API（分红再投资的复权收益率），

@@ -170,6 +170,7 @@ def init_db():
                 purchase_status TEXT,
                 daily_limit REAL,
                 premium_discount REAL,
+                daily_change REAL,
                 upd_date    TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS fetch_log (
@@ -241,6 +242,12 @@ def init_db():
     try:
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute("ALTER TABLE funds ADD COLUMN daily_change REAL")
+    except Exception:
+        pass
+
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("ALTER TABLE dlv_funds ADD COLUMN daily_change REAL")
     except Exception:
         pass
 

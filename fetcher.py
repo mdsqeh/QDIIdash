@@ -140,7 +140,8 @@ def _fetch_fund_extra(codes):
                 for i in range(1, len(sub)):
                     gc = sub['gap_change'].iloc[i]
                     u = sub['unit_nav'].iloc[i]
-                    if pd.notna(gc) and gc > 0.8 and pd.notna(u) and u > 0:
+                    # 阈值 0.001：正常分红单次约 0.006~0.14，噪声约 1e-16
+                    if pd.notna(gc) and gc > 0.001 and pd.notna(u) and u > 0:
                         div_per_unit = gc
                         total_div = div_per_unit * units
                         new_units = total_div / u

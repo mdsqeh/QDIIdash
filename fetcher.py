@@ -26,6 +26,12 @@ def _find_col(df, suffix, code_list=None):
     )
 
 
+def _open_fund_nav_daily():
+    """开放式基金实时净值。akshare 1.20.41 起 fund_open_fund_daily_em 更名为 fund_open_nav_em。"""
+    func = getattr(ak, 'fund_open_nav_em', None) or getattr(ak, 'fund_open_fund_daily_em')
+    return func()
+
+
 def _fetch_all_codes():
     """获取当前所有 QDII 基金代码列表（用于增量检测新基金）。"""
     all_funds_df = ak.fund_name_em()
@@ -350,7 +356,7 @@ def _fetch_incremental(codes):
 
     # 1. 场外基金最新净值（单位净值 + 累计净值）
     print("  📡 增量：获取场外基金最新净值...", flush=True)
-    all_daily = ak.fund_open_fund_daily_em()
+    all_daily = _open_fund_nav_daily()
     nav_col = _find_col(all_daily, '单位净值', codes_set)
     acc_nav_col = _find_col(all_daily, '累计净值', codes_set)
     if nav_col:
@@ -541,7 +547,7 @@ def fetch_all(codes=None):
 
     # 1. 开放式基金最新净值
     print("  📡 获取场外基金最新净值...", flush=True)
-    all_daily_df = ak.fund_open_fund_daily_em()
+    all_daily_df = _open_fund_nav_daily()
     nav_col = _find_col(all_daily_df, '单位净值', code_list)
     acc_nav_col = _find_col(all_daily_df, '累计净值', code_list)
     open_nav = all_daily_df[all_daily_df['基金代码'].isin(code_list)][
